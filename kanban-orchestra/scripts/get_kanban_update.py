@@ -22,6 +22,7 @@ import db
 
 
 STALE_SECONDS = 60
+RUNTIME_STATUSES_WITHOUT_HEARTBEAT_STALE = {"starting", "stopping", "stopped", "hard-break"}
 
 
 def _task_reviewer(task) -> str:
@@ -63,6 +64,12 @@ def _is_stale(last_heartbeat: str | None) -> bool:
         return True
 
 
+def _display_status(status: str, last_heartbeat: str | None) -> str:
+    if _is_stale(last_heartbeat) and status not in RUNTIME_STATUSES_WITHOUT_HEARTBEAT_STALE:
+        return "stale"
+    return status
+
+
 def _kanban_pids() -> list[tuple[int, str]]:
     """Return [(pid, role), ...] for running orchestrator and dashboard processes."""
     results = []
@@ -96,8 +103,7 @@ def build_update(conn) -> str:
     else:
         status = runtime.get("status") or "unknown"
         hb = runtime.get("last_heartbeat_at")
-        stale = _is_stale(hb)
-        display_status = "stale" if stale and status not in ("stopped", "stopping") else status
+        display_status = _display_status(status, hb)
         hb_age = _age(hb)
 
         lines.append(f"ORCHESTRATOR: {display_status}  (heartbeat {hb_age})")
@@ -210,8 +216,7 @@ def _attention_summary(runtime, ready_tasks, blocked_tasks) -> str:
         return "start the orchestrator — no runtime row found"
 
     status = runtime.get("status") or "unknown"
-    stale = _is_stale(runtime.get("last_heartbeat_at"))
-    display_status = "stale" if stale and status not in ("stopped", "stopping") else status
+    display_status = _display_status(status, runtime.get("last_heartbeat_at"))
 
     if display_status == "error":
         msg = runtime.get("status_message") or ""
@@ -224,6 +229,12 @@ def _attention_summary(runtime, ready_tasks, blocked_tasks) -> str:
         if ready_tasks:
             return f"orchestrator is stopped but {len(ready_tasks)} task(s) are ready — restart the orchestrator"
         return "orchestrator is stopped — restart when ready to process work"
+
+    if display_status == "starting":
+        return "orchestrator is starting — wait for runtime to become idle or running"
+
+    if display_status == "hard-break":
+        return "hard BREAK completed — inspect blocked task/worktree before restarting"
 
     if blocked_tasks:
         return f"{len(blocked_tasks)} task(s) are blocked — review and unblock them"

@@ -4,6 +4,7 @@
 import argparse
 import collections
 import datetime
+import json
 import os
 import re
 import signal
@@ -31,6 +32,7 @@ SCRIPTS_DIR = os.path.join(ORCHESTRA_DIR, "kanban-orchestra", "scripts")
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 import db as kanban_db  # noqa: E402
+import orchestrator_control  # noqa: E402
 
 PROCESS_DEFS = [
     {"name": "orchestrator", "cmd": [sys.executable, os.path.join(SCRIPTS_DIR, "orchestrator.py")]},
@@ -141,11 +143,30 @@ class ManagedProcess:
 
     def kill(self):
         if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
+            self._terminate()
             try:
                 self.proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                self.proc.kill()
+                self._terminate(force=True)
+
+    def _terminate(self, force: bool = False):
+        if not self.proc or self.proc.poll() is not None:
+            return
+        sig = signal.SIGKILL if force else signal.SIGTERM
+        if self.name == "orchestrator":
+            try:
+                pgid = os.getpgid(self.proc.pid)
+                if pgid != os.getpgrp():
+                    os.killpg(pgid, sig)
+                    return
+            except (ProcessLookupError, PermissionError):
+                return
+            except OSError:
+                pass
+        if force:
+            self.proc.kill()
+        else:
+            self.proc.terminate()
 
     def restart(self):
         self.kill()
@@ -600,6 +621,7 @@ class OrchestraApp(App):
         if self.auto_start:
             for proc in self.processes:
                 proc.start()
+        self._write_control_heartbeat()
         self.set_interval(0.5, self._poll)
         self.query_one("#process-log", RichLog).can_focus = False
         for button in self.query("#topbar-buttons Button"):
@@ -610,6 +632,8 @@ class OrchestraApp(App):
     # ── Polling (output only — no ps -ax here) ────────────────────────────────
 
     def _poll(self) -> None:
+        self._write_control_heartbeat()
+        self._handle_control_request()
         log = self.query_one("#process-log", RichLog)
         for i, proc in enumerate(self.processes):
             self.query_one(f"#status-{i}", StatusBar).refresh_status()
@@ -639,6 +663,300 @@ class OrchestraApp(App):
             if proc.name == "dashboard":
                 return proc
         return self.processes[-1]
+
+    def _orchestrator_process(self) -> ManagedProcess:
+        for proc in self.processes:
+            if proc.name == "orchestrator":
+                return proc
+        return self.processes[0]
+
+    def _runtime_snapshot(self) -> dict | None:
+        try:
+            conn = kanban_db.connect()
+        except Exception:
+            return None
+        try:
+            return kanban_db.get_runtime(conn)
+        finally:
+            conn.close()
+
+    def _control_status_payload(self) -> dict:
+        orchestrator = self._orchestrator_process()
+        dashboard = self._dashboard_process()
+        return {
+            "supervisor_pid": os.getpid(),
+            "orchestrator": {
+                "status": orchestrator.status,
+                "pid": orchestrator.pid,
+                "detail": orchestrator.status_detail,
+            },
+            "dashboard": {
+                "status": dashboard.status,
+                "pid": dashboard.pid,
+                "detail": dashboard.status_detail,
+                "browser_url": dashboard.browser_url,
+            },
+            "runtime": self._runtime_snapshot(),
+        }
+
+    def _write_control_heartbeat(self) -> None:
+        try:
+            orchestrator_control.write_supervisor_heartbeat(self._control_status_payload())
+        except Exception:
+            pass
+
+    def _handle_control_request(self) -> None:
+        request = orchestrator_control.read_control_request()
+        if not request:
+            return
+        request_id = request.get("id") or "unknown"
+        command = str(request.get("command") or "").strip().lower()
+        try:
+            if command not in orchestrator_control.CONTROL_COMMANDS:
+                response = {
+                    "ok": False,
+                    "message": f"Unknown orchestrator control command: {command}",
+                }
+            else:
+                response = self._execute_control_command(command)
+        except Exception as exc:
+            response = {
+                "ok": False,
+                "message": f"{command or 'control'} failed: {exc}",
+            }
+        response.update(
+            {
+                "id": request_id,
+                "command": command,
+                "handled_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }
+        )
+        orchestrator_control.write_control_response(response)
+        orchestrator_control.clear_control_request()
+
+    def _execute_control_command(self, command: str) -> dict:
+        if command == "status":
+            return {"ok": True, "message": "Supervisor status read.", **self._control_status_payload()}
+        if command == "start":
+            return self._control_start_orchestrator()
+        if command == "stop":
+            return self._control_stop_orchestrator()
+        if command == "break":
+            return self._control_break_orchestrator()
+        return {"ok": False, "message": f"Unknown orchestrator control command: {command}"}
+
+    def _running_tasks(self, conn) -> list[dict]:
+        rows = conn.execute(
+            "SELECT id, title, next_step, branch, review_round FROM tasks WHERE status = 'running' ORDER BY id"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _control_start_orchestrator(self) -> dict:
+        proc = self._orchestrator_process()
+        if proc.status == "running":
+            return {
+                "ok": False,
+                "message": f"Refusing START: supervised orchestrator is already running (PID {proc.pid}).",
+                **self._control_status_payload(),
+            }
+
+        conn = kanban_db.connect()
+        try:
+            running_tasks = self._running_tasks(conn)
+            if running_tasks:
+                ids = ", ".join(f"#{task['id']}" for task in running_tasks)
+                return {
+                    "ok": False,
+                    "message": (
+                        "Refusing START: task(s) still have status=running "
+                        f"({ids}). Use BREAK or resolve the task state manually before restarting."
+                    ),
+                    **self._control_status_payload(),
+                }
+            if not orchestrator_control.singleton_lock_available():
+                return {
+                    "ok": False,
+                    "message": "Refusing START: another orchestrator already holds the repo singleton lock.",
+                    **self._control_status_payload(),
+                }
+
+            kanban_db.upsert_runtime(
+                conn,
+                status="starting",
+                pid=None,
+                started_at="CURRENT_TIMESTAMP",
+                last_heartbeat_at="CURRENT_TIMESTAMP",
+                current_task_id=None,
+                current_step="none",
+                current_branch=None,
+                review_round=None,
+                active_agents=0,
+                status_message="Starting supervised orchestrator",
+            )
+        finally:
+            conn.close()
+
+        proc.start()
+        return {
+            "ok": True,
+            "message": f"START accepted: supervised orchestrator launch requested (PID {proc.pid}).",
+            **self._control_status_payload(),
+        }
+
+    def _control_stop_orchestrator(self) -> dict:
+        proc = self._orchestrator_process()
+        was_running = proc.status == "running"
+        if was_running:
+            proc.kill()
+        killed_agents = orchestrator_control.kill_active_agents()
+
+        conn = kanban_db.connect()
+        try:
+            runtime = kanban_db.get_runtime(conn)
+            message = "Stopped by operator control."
+            if runtime and runtime.get("current_task_id"):
+                message += " Active task fields preserved for inspection."
+            if runtime:
+                kanban_db.update_runtime(
+                    conn,
+                    status="stopped",
+                    pid=None,
+                    active_agents=0,
+                    status_message=message,
+                    last_heartbeat_at="CURRENT_TIMESTAMP",
+                )
+            else:
+                kanban_db.upsert_runtime(
+                    conn,
+                    status="stopped",
+                    pid=None,
+                    started_at=None,
+                    last_heartbeat_at="CURRENT_TIMESTAMP",
+                    current_task_id=None,
+                    current_step="none",
+                    current_branch=None,
+                    review_round=None,
+                    active_agents=0,
+                    status_message=message,
+                )
+        finally:
+            conn.close()
+
+        return {
+            "ok": True,
+            "message": (
+                f"STOP accepted: orchestrator was {'running' if was_running else 'already stopped'}; "
+                f"terminated {len(killed_agents)} active agent process(es)."
+            ),
+            **self._control_status_payload(),
+        }
+
+    def _control_break_orchestrator(self) -> dict:
+        proc = self._orchestrator_process()
+        conn = kanban_db.connect()
+        try:
+            runtime = kanban_db.get_runtime(conn)
+            snapshot = dict(runtime) if runtime else {}
+            active_task_id = snapshot.get("current_task_id")
+            original_step = snapshot.get("current_step") or "none"
+            original_branch = snapshot.get("current_branch")
+            original_round = snapshot.get("review_round")
+
+            was_running = proc.status == "running"
+            if was_running:
+                proc.kill()
+            killed_agents = orchestrator_control.kill_active_agents()
+            removed_stop_marker = orchestrator_control.remove_stop_after_task_marker()
+
+            blocked_task_id = None
+            if active_task_id:
+                task = kanban_db.get_task(conn, active_task_id)
+                if task and task.get("status") == "running":
+                    blocked_task_id = active_task_id
+                    kanban_db.update_task(conn, active_task_id, status="blocked", next_step="none")
+                    kanban_db.add_comment(
+                        conn,
+                        active_task_id,
+                        "Hard BREAK requested by operator control. "
+                        f"Interrupted active step={original_step}, branch={original_branch or 'unset'}, "
+                        f"review_round={original_round if original_round is not None else 'unset'}. "
+                        "The supervised orchestrator and recorded active agent children were stopped; "
+                        "transient control markers were cleared; git/worktree changes were left untouched.",
+                        kind="comment",
+                        author="orchestrator",
+                    )
+                    parent_id = task.get("parent_task_id")
+                    if parent_id:
+                        parent = kanban_db.get_task(conn, parent_id)
+                        if parent and parent.get("status") not in ("done", "blocked"):
+                            kanban_db.update_task(conn, parent_id, status="blocked")
+                            kanban_db.add_comment(
+                                conn,
+                                parent_id,
+                                f"Child task {active_task_id} was blocked by a hard BREAK; supertask blocked.",
+                                kind="comment",
+                                author="orchestrator",
+                            )
+                elif task:
+                    kanban_db.add_comment(
+                        conn,
+                        active_task_id,
+                        "Hard BREAK requested by operator control, but the snapped active task was "
+                        f"already status={task.get('status')}; task status was not changed. "
+                        "Runtime active fields were cleared and git/worktree changes were left untouched.",
+                        kind="comment",
+                        author="orchestrator",
+                    )
+
+            kanban_db.add_run_log(
+                conn,
+                active_task_id,
+                "Hard BREAK operator control executed; supervised orchestrator and recorded active agents stopped.",
+                author="orchestrator",
+            )
+
+            if runtime:
+                kanban_db.update_runtime(
+                    conn,
+                    status="hard-break",
+                    pid=None,
+                    current_task_id=None,
+                    current_step="none",
+                    current_branch=None,
+                    review_round=None,
+                    active_agents=0,
+                    status_message=(
+                        "Hard BREAK executed. Runtime active task fields cleared; "
+                        f"{'task #' + str(blocked_task_id) + ' blocked' if blocked_task_id else 'no running task blocked'}."
+                    ),
+                    last_heartbeat_at="CURRENT_TIMESTAMP",
+                )
+            else:
+                kanban_db.upsert_runtime(
+                    conn,
+                    status="hard-break",
+                    pid=None,
+                    started_at=None,
+                    last_heartbeat_at="CURRENT_TIMESTAMP",
+                    current_task_id=None,
+                    current_step="none",
+                    current_branch=None,
+                    review_round=None,
+                    active_agents=0,
+                    status_message="Hard BREAK executed. Runtime active task fields cleared.",
+                )
+        finally:
+            conn.close()
+
+        return {
+            "ok": True,
+            "message": (
+                f"BREAK accepted: orchestrator was {'running' if was_running else 'already stopped'}; "
+                f"terminated {len(killed_agents)} active agent process(es); "
+                f"stop-after-task marker {'removed' if removed_stop_marker else 'not present'}."
+            ),
+            **self._control_status_payload(),
+        }
 
     def _refresh_action_buttons(self) -> None:
         proc = self.processes[self.selected_index]
@@ -763,9 +1081,35 @@ def main():
     parser = argparse.ArgumentParser(description="Orchestra UI — process manager TUI")
     parser.add_argument("--doNotStart", action="store_true",
                         help="Open UI without starting processes")
+    parser.add_argument(
+        "--orchestrator-control",
+        choices=sorted(orchestrator_control.CONTROL_COMMANDS),
+        metavar="COMMAND",
+        help="Send a local control command to the live orchestra-ui supervisor: status, start, stop, or break",
+    )
+    parser.add_argument(
+        "--control-timeout",
+        type=float,
+        default=15.0,
+        help="Seconds to wait for an orchestra-ui control response",
+    )
     args = parser.parse_args()
+
+    if args.orchestrator_control:
+        try:
+            response = orchestrator_control.submit_control_command(
+                args.orchestrator_control,
+                timeout=args.control_timeout,
+            )
+        except orchestrator_control.ControlError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(response, indent=2, sort_keys=True))
+        return 0 if response.get("ok") else 1
+
     OrchestraApp(auto_start=not args.doNotStart).run()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

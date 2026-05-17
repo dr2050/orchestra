@@ -37,6 +37,7 @@ def _load_local_module(alias, filename, canonical_name=None):
 
 
 db = _load_local_module("kanban_test_db", "db.py", canonical_name="db")
+orchestrator_control = _load_local_module("kanban_test_orchestrator_control", "orchestrator_control.py", canonical_name="orchestrator_control")
 orchestrator = _load_local_module("kanban_test_orchestrator", "orchestrator.py")
 config = _load_local_module("kanban_test_config", "config.py")
 task_module = _load_local_module("kanban_test_task", "task.py")
@@ -2157,6 +2158,33 @@ class TestAgentTranscriptCapture(unittest.TestCase):
         transcript_text = transcript_files[0].read_text(encoding="utf-8")
         self.assertIn("# cwd: /tmp/work-repo", transcript_text)
 
+    def test_run_agent_registers_and_clears_active_process_metadata(self):
+        tid = db.add_task(self.conn, "Active process metadata", coder_agent="codex")
+        fake_proc = self._fake_proc(["done\n"], 0)
+
+        with patch.dict(orchestrator.AGENT_CMD, {"codex": ["codex", "{prompt}"]}, clear=False), \
+             patch.object(orchestrator.subprocess, "Popen", return_value=fake_proc), \
+             patch.object(orchestrator.db, "get_db_path", return_value=self.db_path), \
+             patch.object(orchestrator.orchestrator_control, "register_active_agent", return_value="rec-1") as mock_register, \
+             patch.object(orchestrator.orchestrator_control, "clear_active_agent") as mock_clear:
+            exit_code = orchestrator.run_agent(
+                "codex",
+                "prompt body",
+                tid,
+                self.conn,
+                "commit-make",
+            )
+
+        self.assertEqual(exit_code, 0)
+        mock_register.assert_called_once_with(
+            task_id=tid,
+            verb="commit-make",
+            agent_name="codex",
+            pid=4242,
+            db_path=self.db_path,
+        )
+        mock_clear.assert_called_once_with("rec-1", db_path=self.db_path)
+
     def test_run_agent_logs_failure_summary_and_saves_full_transcript(self):
         tid = db.add_task(self.conn, "Transcript failure", coder_agent="codex")
         fake_proc = self._fake_proc(
@@ -2732,6 +2760,57 @@ class TestOrchestratorRuntime(unittest.TestCase):
                               last_heartbeat_at="CURRENT_TIMESTAMP",
                               current_step="none", active_agents=0,
                               status_message="bad")
+
+    def test_runtime_status_accepts_operator_control_states(self):
+        db.upsert_runtime(self.conn, status="starting", pid=1,
+                          started_at="CURRENT_TIMESTAMP",
+                          last_heartbeat_at="CURRENT_TIMESTAMP",
+                          current_step="none", active_agents=0,
+                          status_message="launching")
+        self.assertEqual(db.get_runtime(self.conn)["status"], "starting")
+
+        db.update_runtime(self.conn, status="hard-break", status_message="break complete")
+        rt = db.get_runtime(self.conn)
+        self.assertEqual(rt["status"], "hard-break")
+        self.assertEqual(rt["status_message"], "break complete")
+
+    def test_stale_runtime_status_constraint_is_migrated_preserving_row(self):
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        try:
+            legacy_sql = db.SCHEMA_SQL.replace(
+                "CHECK(status IN ('idle', 'running', 'starting', 'stopping', 'stopped', 'hard-break', 'error'))",
+                "CHECK(status IN ('idle', 'running', 'stopping', 'stopped', 'error'))",
+            )
+            legacy = sqlite3.connect(tmp.name)
+            try:
+                legacy.executescript(legacy_sql)
+                legacy.execute(
+                    """INSERT INTO orchestrator_runtime (
+                        singleton, status, pid, started_at, last_heartbeat_at,
+                        current_step, active_agents, status_message
+                    ) VALUES (1, 'stopped', 123, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+                              'none', 0, 'preserved')"""
+                )
+                legacy.commit()
+            finally:
+                legacy.close()
+
+            migrated = db.connect(tmp.name)
+            try:
+                rt = db.get_runtime(migrated)
+                self.assertEqual(rt["status"], "stopped")
+                self.assertEqual(rt["pid"], 123)
+                self.assertEqual(rt["status_message"], "preserved")
+                db.update_runtime(migrated, status="starting")
+                self.assertEqual(db.get_runtime(migrated)["status"], "starting")
+            finally:
+                migrated.close()
+        finally:
+            for suffix in ("", "-shm", "-wal"):
+                path = tmp.name + suffix
+                if os.path.exists(path):
+                    os.unlink(path)
 
     def test_runtime_current_step_check_constraint(self):
         with self.assertRaises(Exception):

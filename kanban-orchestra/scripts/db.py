@@ -11,7 +11,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS tasks (
@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS comments (
 CREATE TABLE IF NOT EXISTS orchestrator_runtime (
     singleton            INTEGER PRIMARY KEY CHECK(singleton = 1),
     status               TEXT NOT NULL
-        CHECK(status IN ('idle', 'running', 'stopping', 'stopped', 'error')),
+        CHECK(status IN ('idle', 'running', 'starting', 'stopping', 'stopped', 'hard-break', 'error')),
     pid                  INTEGER,
     started_at           DATETIME,
     last_heartbeat_at    DATETIME,
@@ -219,6 +219,83 @@ def _cleanup_db_artifacts(db_path: str) -> None:
             pass
 
 
+def _migrate_orchestrator_runtime(conn: sqlite3.Connection) -> None:
+    """Recreate the transient runtime table with current CHECK constraints."""
+    cols = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(orchestrator_runtime)").fetchall()
+    }
+    required = {
+        "singleton", "status", "pid", "started_at", "last_heartbeat_at",
+        "current_task_id", "current_step", "current_branch", "review_round",
+        "active_agents", "status_message", "updated_at",
+    }
+    if not required.issubset(cols):
+        conn.executescript("DROP TABLE IF EXISTS orchestrator_runtime;")
+        return
+
+    conn.executescript("""
+        BEGIN;
+        CREATE TABLE orchestrator_runtime_migrated (
+            singleton            INTEGER PRIMARY KEY CHECK(singleton = 1),
+            status               TEXT NOT NULL
+                CHECK(status IN ('idle', 'running', 'starting', 'stopping', 'stopped', 'hard-break', 'error')),
+            pid                  INTEGER,
+            started_at           DATETIME,
+            last_heartbeat_at    DATETIME,
+            current_task_id      INTEGER REFERENCES tasks(id),
+            current_step         TEXT
+                CHECK(current_step IN (
+                    'commit-make', 'commit-review',
+                    'commit-make-supertask', 'commit-review-supertask',
+                    'commit-plan', 'commit-plan-review',
+                    'none'
+                )),
+            current_branch       TEXT,
+            review_round         INTEGER,
+            active_agents        INTEGER NOT NULL DEFAULT 0,
+            status_message       TEXT,
+            updated_at           DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO orchestrator_runtime_migrated (
+            singleton, status, pid, started_at, last_heartbeat_at, current_task_id,
+            current_step, current_branch, review_round, active_agents, status_message,
+            updated_at
+        )
+        SELECT
+            singleton,
+            CASE
+                WHEN status IN ('idle', 'running', 'starting', 'stopping', 'stopped', 'hard-break', 'error')
+                THEN status ELSE 'error'
+            END,
+            pid,
+            started_at,
+            last_heartbeat_at,
+            CASE
+                WHEN current_task_id IN (SELECT id FROM tasks) THEN current_task_id
+                ELSE NULL
+            END,
+            CASE
+                WHEN current_step IN (
+                    'commit-make', 'commit-review',
+                    'commit-make-supertask', 'commit-review-supertask',
+                    'commit-plan', 'commit-plan-review',
+                    'none'
+                )
+                THEN current_step ELSE 'none'
+            END,
+            current_branch,
+            review_round,
+            active_agents,
+            status_message,
+            updated_at
+        FROM orchestrator_runtime;
+        DROP TABLE orchestrator_runtime;
+        ALTER TABLE orchestrator_runtime_migrated RENAME TO orchestrator_runtime;
+        COMMIT;
+    """)
+
+
 def restore_dump(
     db_path: str | None = None,
     sql_path: str | None = None,
@@ -348,13 +425,16 @@ def _check_schema_compatible(conn: sqlite3.Connection) -> None:
             "or run 'task restore' from a current kanban-orchestra.sql dump."
         )
 
-    # orchestrator_runtime.current_step must accept all orchestrator step names.
-    # This table holds only transient state so we can safely drop and recreate it.
+    # orchestrator_runtime must accept all current status and step names.
+    # This table holds transient state, but preserve the singleton row when
+    # possible so live deployments do not lose useful operator context.
     runtime_schema = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='orchestrator_runtime'"
     ).fetchone()
-    if runtime_schema and "'commit-make-supertask'" not in runtime_schema[0]:
-        conn.executescript("DROP TABLE IF EXISTS orchestrator_runtime;")
+    if runtime_schema:
+        required_runtime_tokens = ("'commit-make-supertask'", "'starting'", "'hard-break'")
+        if any(token not in runtime_schema[0] for token in required_runtime_tokens):
+            _migrate_orchestrator_runtime(conn)
 
     # run_log.task_id must be nullable so the orchestrator can write global entries
     # with task_id=NULL.  Older schema versions may have created it with NOT NULL.

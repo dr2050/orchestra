@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -79,3 +80,48 @@ class TestBuildUpdate(unittest.TestCase):
         self.assertIn("#2 [commit-make] Ready task  branch: feat-ready  coder: sonnet  reviewer: opus  skips: commit-plan", update)
         self.assertIn("#3 Blocked task  coder: haiku  reviewer: codex  — Needs human input  skips: commit-review", update)
         self.assertIn("#4 Done task  commit: 33333333  coder: claude  configured reviewer: opus  approver: gemini", update)
+
+    def test_operator_control_statuses_render_distinctly(self):
+        old_ts = (datetime.now(timezone.utc) - timedelta(seconds=120)).strftime("%Y-%m-%d %H:%M:%S")
+        for status, attention in (
+            ("starting", "orchestrator is starting"),
+            ("stopped", "orchestrator is stopped"),
+            ("hard-break", "hard BREAK completed"),
+        ):
+            with self.subTest(status=status):
+                db.upsert_runtime(
+                    self.conn,
+                    status=status,
+                    pid=None,
+                    started_at=None,
+                    last_heartbeat_at=old_ts,
+                    current_task_id=None,
+                    current_step="none",
+                    active_agents=0,
+                    status_message=f"{status} message",
+                )
+
+                update = get_kanban_update.build_update(self.conn)
+
+                self.assertIn(f"ORCHESTRATOR: {status}", update)
+                self.assertNotIn("ORCHESTRATOR: stale", update)
+                self.assertIn(attention, update)
+
+    def test_running_with_old_heartbeat_renders_stale(self):
+        old_ts = (datetime.now(timezone.utc) - timedelta(seconds=120)).strftime("%Y-%m-%d %H:%M:%S")
+        db.upsert_runtime(
+            self.conn,
+            status="running",
+            pid=123,
+            started_at=None,
+            last_heartbeat_at=old_ts,
+            current_task_id=None,
+            current_step="none",
+            active_agents=0,
+            status_message="old heartbeat",
+        )
+
+        update = get_kanban_update.build_update(self.conn)
+
+        self.assertIn("ORCHESTRATOR: stale", update)
+        self.assertIn("orchestrator heartbeat is stale", update)

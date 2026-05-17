@@ -12,7 +12,7 @@ This command is for quickly reading the state of a Kanban Orchestra pipeline wit
 
 Runs the canonical status wrapper from `$ORCHESTRA_DIR` against the current repo's `kanban-orchestra.db`, then prints a structured plain-text report covering:
 
-- **ORCHESTRATOR** — status (idle / running / stale / error / stopped) and heartbeat age
+- **ORCHESTRATOR** — status (idle / running / starting / stopped / hard-break / stale / error) and heartbeat age
 - **ACTIVE TASK** — ID, title, branch, coder, step, review-round, and review progress if in commit-review
 - **READY** — tasks queued and waiting to run, with their next step
 - **BLOCKED** — blocked tasks with a short note from the most recent comment
@@ -50,7 +50,9 @@ The **ATTENTION** line is the quick answer. Common values:
 - `work is progressing normally` — nothing to do
 - `orchestrator heartbeat is stale — it may have crashed; check the process` — investigate and restart
 - `orchestrator is in error state — investigate: <message>` — read the message and fix
+- `orchestrator is starting — wait for runtime to become idle or running` — startup was requested through `orchestra-ui`
 - `orchestrator is stopped but N task(s) are ready — restart the orchestrator` — restart to resume work
+- `hard BREAK completed — inspect blocked task/worktree before restarting` — emergency break completed and needs human review
 - `N task(s) are blocked — review and unblock them` — inspect blocked tasks and resolve
 - `queue is empty and orchestrator is idle — add tasks when ready` — pipeline is waiting for new work
 

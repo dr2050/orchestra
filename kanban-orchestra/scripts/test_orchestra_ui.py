@@ -4,6 +4,7 @@
 import importlib.util
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_DIR = REPO_ROOT / "kanban-orchestra" / "scripts"
 UI_PATH = REPO_ROOT / "orchestra-ui" / "orchestra-ui.py"
 
-os.environ.setdefault("ORCHESTRA_DIR", str(REPO_ROOT))
+os.environ["ORCHESTRA_DIR"] = str(REPO_ROOT)
 sys.path.insert(0, str(SCRIPT_DIR))
 
 
@@ -43,13 +44,27 @@ class TestLogColorizer(unittest.TestCase):
 
 
 class FakeProcess:
-    def __init__(self, status="stopped", cmd=None):
+    def __init__(self, status="stopped", cmd=None, name="orchestrator", pid=111):
         self.status = status
         self.cmd = cmd
+        self.name = name
+        self.pid = pid if status == "running" else None
+        self.status_detail = f"PID {self.pid}" if self.pid else ""
         self.killed = False
+        self.started = False
+        self.browser_url = None
 
     def kill(self):
         self.killed = True
+        self.status = "stopped"
+        self.pid = None
+        self.status_detail = ""
+
+    def start(self):
+        self.started = True
+        self.status = "running"
+        self.pid = self.pid or 222
+        self.status_detail = f"PID {self.pid}"
 
 
 class AppHarness:
@@ -132,6 +147,140 @@ class TestOrchestraAppQuitFlow(unittest.TestCase):
 
                 self.assertTrue(app.exited)
                 self.assertEqual(orchestrator.killed, choice == "kill")
+
+
+class TestOrchestratorControl(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = str(Path(self.tmpdir.name) / "kanban.db")
+        self.conn = orchestra_ui.kanban_db.connect(self.db_path)
+        self.old_kanban_db = os.environ.get("KANBAN_DB")
+        os.environ["KANBAN_DB"] = self.db_path
+
+    def tearDown(self):
+        self.conn.close()
+        if self.old_kanban_db is None:
+            os.environ.pop("KANBAN_DB", None)
+        else:
+            os.environ["KANBAN_DB"] = self.old_kanban_db
+        self.tmpdir.cleanup()
+
+    def _app(self, orchestrator_status="stopped"):
+        app = orchestra_ui.OrchestraApp(auto_start=False)
+        app.processes = [
+            FakeProcess(orchestrator_status, cmd=["orchestrator"], name="orchestrator"),
+            FakeProcess("stopped", cmd=["dashboard"], name="dashboard"),
+        ]
+        return app
+
+    def test_start_refuses_duplicate_supervised_orchestrator(self):
+        app = self._app("running")
+
+        response = app._execute_control_command("start")
+
+        self.assertFalse(response["ok"])
+        self.assertIn("already running", response["message"])
+
+    def test_start_launches_one_supervised_orchestrator(self):
+        app = self._app("stopped")
+
+        with patch.object(orchestra_ui.orchestrator_control, "singleton_lock_available", return_value=True):
+            response = app._execute_control_command("start")
+
+        self.assertTrue(response["ok"])
+        self.assertTrue(app.processes[0].started)
+        runtime = orchestra_ui.kanban_db.get_runtime(self.conn)
+        self.assertEqual(runtime["status"], "starting")
+        self.assertEqual(runtime["current_step"], "none")
+
+    def test_start_refuses_when_task_is_still_running_after_stop(self):
+        task_id = orchestra_ui.kanban_db.add_task(self.conn, "Interrupted task", branch="feat-x")
+        orchestra_ui.kanban_db.update_task(self.conn, task_id, status="running")
+        app = self._app("stopped")
+
+        response = app._execute_control_command("start")
+
+        self.assertFalse(response["ok"])
+        self.assertIn("status=running", response["message"])
+        self.assertFalse(app.processes[0].started)
+
+    def test_stop_preserves_task_status_and_runtime_active_fields(self):
+        task_id = orchestra_ui.kanban_db.add_task(self.conn, "Paused task", branch="feat-pause")
+        orchestra_ui.kanban_db.update_task(self.conn, task_id, status="running", next_step="commit-make")
+        orchestra_ui.kanban_db.upsert_runtime(
+            self.conn,
+            status="running",
+            pid=111,
+            started_at="CURRENT_TIMESTAMP",
+            last_heartbeat_at="CURRENT_TIMESTAMP",
+            current_task_id=task_id,
+            current_step="commit-make",
+            current_branch="feat-pause",
+            review_round=0,
+            active_agents=1,
+            status_message="Working",
+        )
+        app = self._app("running")
+
+        with patch.object(orchestra_ui.orchestrator_control, "kill_active_agents", return_value=[{"pid": 444}]):
+            response = app._execute_control_command("stop")
+
+        self.assertTrue(response["ok"])
+        self.assertTrue(app.processes[0].killed)
+        task = orchestra_ui.kanban_db.get_task(self.conn, task_id)
+        self.assertEqual(task["status"], "running")
+        runtime = orchestra_ui.kanban_db.get_runtime(self.conn)
+        self.assertEqual(runtime["status"], "stopped")
+        self.assertEqual(runtime["current_task_id"], task_id)
+        self.assertEqual(runtime["current_step"], "commit-make")
+        self.assertIn("preserved", runtime["status_message"])
+
+    def test_break_blocks_running_child_clears_runtime_and_markers(self):
+        parent_id = orchestra_ui.kanban_db.add_task(self.conn, "Parent", kind="supertask")
+        child_id = orchestra_ui.kanban_db.add_task(
+            self.conn,
+            "Child",
+            branch="feat-break",
+            parent_task_id=parent_id,
+            sequence_index=100,
+        )
+        orchestra_ui.kanban_db.update_task(self.conn, parent_id, status="pending_subtasks", next_step="none")
+        orchestra_ui.kanban_db.update_task(self.conn, child_id, status="running", next_step="commit-make")
+        orchestra_ui.kanban_db.upsert_runtime(
+            self.conn,
+            status="running",
+            pid=111,
+            started_at="CURRENT_TIMESTAMP",
+            last_heartbeat_at="CURRENT_TIMESTAMP",
+            current_task_id=child_id,
+            current_step="commit-make",
+            current_branch="feat-break",
+            review_round=2,
+            active_agents=1,
+            status_message="Working",
+        )
+        stop_marker = Path(self.db_path).resolve().parent / "KANBAN_ORCHESTRATOR_STOP_AFTER_TASK"
+        stop_marker.write_text("", encoding="utf-8")
+        app = self._app("running")
+
+        with patch.object(orchestra_ui.orchestrator_control, "kill_active_agents", return_value=[{"pid": 444}]):
+            response = app._execute_control_command("break")
+
+        self.assertTrue(response["ok"])
+        self.assertTrue(app.processes[0].killed)
+        self.assertFalse(stop_marker.exists())
+        child = orchestra_ui.kanban_db.get_task(self.conn, child_id)
+        parent = orchestra_ui.kanban_db.get_task(self.conn, parent_id)
+        self.assertEqual(child["status"], "blocked")
+        self.assertEqual(child["next_step"], "none")
+        self.assertEqual(parent["status"], "blocked")
+        comments = orchestra_ui.kanban_db.get_comments(self.conn, child_id)
+        self.assertTrue(any("git/worktree changes were left untouched" in c["message"] for c in comments))
+        runtime = orchestra_ui.kanban_db.get_runtime(self.conn)
+        self.assertEqual(runtime["status"], "hard-break")
+        self.assertIsNone(runtime["current_task_id"])
+        self.assertEqual(runtime["current_step"], "none")
+        self.assertEqual(runtime["active_agents"], 0)
 
 
 if __name__ == "__main__":

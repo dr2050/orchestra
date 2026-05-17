@@ -232,14 +232,20 @@ Runtime status values:
 
 - `idle`
 - `running`
+- `starting`
 - `stopping`
 - `stopped`
+- `hard-break`
 - `error`
 
 ### Runtime Files
 
 - `.kanban-orchestra/orchestrator.log`: append-only stdout log for each orchestrator process
 - `.kanban-orchestra/artifacts/`: filesystem-backed run artifacts such as transcripts
+- `.kanban-orchestra/orchestra-ui-supervisor.json`: live heartbeat for the local `orchestra-ui` supervisor
+- `.kanban-orchestra/orchestrator-control-request.json`: transient local control request consumed by `orchestra-ui`
+- `.kanban-orchestra/orchestrator-control-response.json`: transient local control response for the requester
+- `.kanban-orchestra/active-agent-processes.json`: transient process-group metadata for active agent children
 
 ## Task States
 
@@ -620,6 +626,46 @@ When the file is detected:
 
 The file is a one-shot signal: deletion is the acknowledgment, so the orchestrator will not stop again on the next run unless the file is recreated.
 
+### `orchestra-ui` Operator Control
+
+When `orchestra-ui` is running, local operators can control the orchestrator it
+supervises through repo-local JSON control files:
+
+```bash
+ko-ui --orchestrator-control status
+ko-ui --orchestrator-control start
+ko-ui --orchestrator-control stop
+ko-ui --orchestrator-control break
+```
+
+The control path is local-only and requires a live `orchestra-ui` supervisor
+heartbeat. If no supervisor is alive, commands fail instead of launching an
+unmanaged orchestrator.
+
+`start`:
+- launches the orchestrator only as an `orchestra-ui` supervised process
+- refuses to start when the supervised orchestrator is already running
+- refuses to start when another orchestrator holds the singleton lock
+- refuses to start when any task is still `status=running`
+- sets runtime `status=starting` before spawning
+
+`stop` / pause:
+- stops the supervised orchestrator and recorded active agent child process groups
+- does not change task statuses, git state, staging, stash state, or worktree files
+- sets runtime `status=stopped`
+- preserves active runtime task/step/branch fields so the paused work remains visible
+
+`break`:
+- snapshots runtime active task/step/branch/review round before stopping processes
+- stops the supervised orchestrator and recorded active agent child process groups
+- removes the graceful stop marker and transient active-agent metadata
+- if the snapped active task is still `status=running`, parks it as `blocked`
+  with a durable comment recording the interrupted step, branch, review round,
+  and that git/worktree changes were left untouched
+- if the interrupted task is a child task, blocks/comments the parent supertask
+  consistently with normal child-block behavior
+- clears runtime active fields and sets runtime `status=hard-break`
+
 ### Pinned Task Execution
 
 Once a task is picked up, the orchestrator keeps processing that same task until
@@ -698,7 +744,7 @@ The dashboard is read-only. It exists to answer operational questions quickly.
 Primary questions:
 
 - Is the orchestrator alive?
-- Is it idle, running, stopped, stalled, stale, or in error?
+- Is it idle, running, starting, stopped, in `hard-break`, stalled, stale, or in error?
 - What task is active?
 - What branch and step is active?
 - What does recent task activity look like?
@@ -710,10 +756,15 @@ Primary questions:
 - The orchestrator writes a singleton runtime row on startup.
 - Heartbeat updates every `10` seconds.
 - A stale heartbeat indicates a dead or wedged orchestrator even if stored status still says `running`.
-- Runtime `current_step` is normalized to `commit-make`, `commit-review`, or `none`.
+- Runtime `current_step` is normalized to one of the orchestrator step names
+  (`commit-plan`, `commit-plan-review`, `commit-make`, `commit-review`,
+  `commit-make-supertask`, `commit-review-supertask`) or `none`.
 - Supertask detail is conveyed through `status_message`.
 - The orchestrator appends stdout lines to `.kanban-orchestra/orchestrator.log`.
 - A stalled agent ACK wait is surfaced through `status_message`.
+- `starting`, `stopped`, and `hard-break` are terminal/operator-visible states
+  and should not be mislabeled as stale solely because no orchestrator heartbeat
+  is currently advancing.
 
 ### Minimum Dashboard Surface
 

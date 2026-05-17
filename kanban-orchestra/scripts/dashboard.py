@@ -272,11 +272,22 @@ STATUS_BADGE_CLASS = {
     "blocked":  "badge-blocked",
     "pending_subtasks": "badge-pending-subtasks",
     "idle":     "badge-idle",
+    "starting": "badge-starting",
     "stopping": "badge-stopping",
     "stopped":  "badge-stopped",
+    "hard-break": "badge-hard-break",
     "error":    "badge-error",
     "stale":    "badge-stale",
 }
+
+
+RUNTIME_STATUSES_WITHOUT_HEARTBEAT_STALE = {"starting", "stopping", "stopped", "hard-break"}
+
+
+def _runtime_display_status(status: str, last_heartbeat: str | None) -> str:
+    if _is_stale(last_heartbeat) and status not in RUNTIME_STATUSES_WITHOUT_HEARTBEAT_STALE:
+        return "stale"
+    return status
 
 
 COMMENT_KIND_CLASS = {
@@ -478,8 +489,7 @@ def render_health_card(runtime: dict | None) -> str:
         </div>"""
 
     status = runtime.get("status") or "unknown"
-    stale = _is_stale(runtime.get("last_heartbeat_at"))
-    display_status = "stale" if stale and status not in ("stopped", "stopping") else status
+    display_status = _runtime_display_status(status, runtime.get("last_heartbeat_at"))
     badge_cls = STATUS_BADGE_CLASS.get(display_status, "badge-none")
     hb_age = _live_age(runtime.get("last_heartbeat_at"), css_class="heartbeat-age")
     lines = [
@@ -937,8 +947,7 @@ def render_task_runtime_panel(task: dict, runtime: dict | None) -> str:
     step = runtime.get("current_step") or ""
     msg = _display_review_round_text(runtime.get("status_message"))
     hb = _live_age(runtime.get("last_heartbeat_at"), css_class="heartbeat-age")
-    stale = _is_stale(runtime.get("last_heartbeat_at"))
-    health = "stale" if stale else runtime.get("status", "")
+    health = _runtime_display_status(runtime.get("status", ""), runtime.get("last_heartbeat_at"))
     badge_cls = STATUS_BADGE_CLASS.get(health, "badge-running")
 
     review_html = ""
@@ -1377,8 +1386,10 @@ th { color: var(--muted); font-weight: normal; text-transform: uppercase; font-s
 .badge-blocked  { background: #1a0000; color: var(--red); border: 1px solid var(--red); }
 .badge-pending-subtasks { background: #1a0f00; color: var(--orange); border: 1px solid var(--orange); }
 .badge-idle     { background: #1a1a1a; color: var(--muted); border: 1px solid #333333; }
+.badge-starting { background: #001020; color: var(--blue); border: 1px solid var(--blue); }
 .badge-stopping { background: #1a0d00; color: var(--orange); border: 1px solid var(--orange); }
 .badge-stopped  { background: #1a1a1a; color: #555555; border: 1px solid #333333; }
+.badge-hard-break { background: #1a0d00; color: var(--orange); border: 1px solid var(--orange); }
 .badge-error    { background: #1a0000; color: var(--red); border: 1px solid var(--red); }
 .badge-stale    { background: #1a0000; color: var(--red); border: 1px solid var(--red); }
 .kind-glyph { font-size: 0.85em; opacity: 0.6; }

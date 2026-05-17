@@ -186,6 +186,20 @@ class TestHealthCard(unittest.TestCase):
         html = dashboard.render_health_card(runtime)
         self.assertIn("stale", html)
 
+    def test_operator_control_states_are_not_mislabeled_stale(self):
+        old_ts = (datetime.now(timezone.utc) - timedelta(seconds=120)).strftime("%Y-%m-%d %H:%M:%S")
+        for status in ("starting", "stopped", "hard-break"):
+            with self.subTest(status=status):
+                runtime = {
+                    "status": status,
+                    "last_heartbeat_at": old_ts,
+                    "status_message": f"{status} message",
+                    "current_task_id": None,
+                }
+                html = dashboard.render_health_card(runtime)
+                self.assertIn(status, html)
+                self.assertNotIn('badge-stale">stale', html)
+
     def test_running_with_task(self):
         utc_dt = datetime.now(timezone.utc)
         ts = utc_dt.strftime("%Y-%m-%d %H:%M:%S")

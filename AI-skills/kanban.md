@@ -156,7 +156,39 @@ task log <task-id> "<message>"
 ```bash
 ko-orchestrator
 ko-dashboard
+ko-ui
 ```
+
+When `ko-ui` is running, it supervises both the dashboard and orchestrator.
+Use its local control path for operator actions instead of PID hunting:
+
+```bash
+ko-ui --orchestrator-control status
+ko-ui --orchestrator-control start
+ko-ui --orchestrator-control stop
+ko-ui --orchestrator-control break
+```
+
+Control semantics:
+- `status` reports the live `orchestra-ui` supervisor, supervised
+  orchestrator process, dashboard process, and runtime row.
+- `start` launches one supervised orchestrator and refuses duplicates. It
+  also refuses to start while any task is still `status=running`; resolve the
+  task manually or use `break` first.
+- `stop` / pause stops the supervised orchestrator and recorded active agent
+  children without changing task statuses, git state, staging, stash state, or
+  worktree files. Use it when a human or agent needs to inspect or edit the
+  repo exactly as-is.
+- `break` is for wrong-task, wedged-run, or emergency interruption. It stops
+  the supervised orchestrator and recorded active agent children, removes
+  transient stop/control markers, clears stale runtime active-task fields, and
+  parks an interrupted `status=running` task as `blocked` with a durable
+  comment. It intentionally leaves git/worktree changes untouched.
+
+Agents may use `stop` when asked to pause the supervised run or before a
+manual inspection that must preserve state. Use `break` only when continuing
+would make the task history less truthful or the run is wedged. After `break`,
+inspect the blocked task and worktree before restarting.
 
 Graceful stop after the current task finishes:
 
@@ -164,7 +196,8 @@ Graceful stop after the current task finishes:
 touch KANBAN_ORCHESTRATOR_STOP_AFTER_TASK
 ```
 
-The orchestrator detects it at the top of the next polling loop, logs the
+The graceful stop marker is separate from `stop`: the orchestrator detects it
+at the top of the next polling loop after the current task finishes, logs the
 detection, deletes the file, and exits.
 
 Notes:
@@ -216,11 +249,16 @@ sqlite3 kanban-orchestra.db "select status, current_task_id, current_step, curre
 
 Read the result like this:
 - `status = running` with a fresh heartbeat usually means active work.
+- `status = starting` means `orchestra-ui` accepted a start request and is
+  launching the supervised orchestrator.
 - `status = idle` with a fresh heartbeat means the orchestrator is healthy
   and waiting.
 - `status_message` starting with `STALLED:` means the orchestrator is
   waiting for an agent ping acknowledgment and retries every 60 seconds.
 - An old `last_heartbeat_at` means stale or dead.
+- `status = stopped` means the supervised orchestrator was stopped or paused.
+- `status = hard-break` means BREAK cleared stale active runtime fields; check
+  the blocked task comment and worktree before restarting.
 - `status = error` means an orchestrator-level failure.
 - List blocked tasks with `task list --status blocked`.
 
