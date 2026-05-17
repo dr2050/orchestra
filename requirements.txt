@@ -1,0 +1,7 @@
+fastapi
+httpx
+markdown-it-py
+pytest
+rich
+textual
+uvicorn

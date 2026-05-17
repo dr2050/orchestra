@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Create or update the shared Orchestra Python environment.
+#
+# Run this in the deployed Orchestra checkout, e.g. /Users/Shared/orchestra.
+
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+orchestra_dir="${ORCHESTRA_DIR:-$(cd -- "$script_dir/.." && pwd)}"
+python_bin="${PYTHON:-python3}"
+venv_dir="$orchestra_dir/.venv"
+requirements="$orchestra_dir/requirements.txt"
+
+if [[ ! -f "$requirements" ]]; then
+  echo "error: requirements file not found: $requirements" >&2
+  exit 2
+fi
+
+if [[ ! -x "$venv_dir/bin/python" ]]; then
+  echo "+ $python_bin -m venv $venv_dir"
+  "$python_bin" -m venv "$venv_dir"
+fi
+
+echo "+ $venv_dir/bin/python -m pip install --upgrade pip"
+"$venv_dir/bin/python" -m pip install --disable-pip-version-check --no-cache-dir --quiet --upgrade pip
+
+echo "+ $venv_dir/bin/python -m pip install -r $requirements"
+"$venv_dir/bin/python" -m pip install --disable-pip-version-check --no-cache-dir --quiet -r "$requirements"
+
+# In /Users/Shared deployments, keep the environment usable by a shared group
+# when the filesystem permissions allow it.
+chmod -R g+rwX "$venv_dir" 2>/dev/null || true
+
+echo "Orchestra Python environment ready: $venv_dir"

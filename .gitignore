@@ -1,0 +1,33 @@
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# Databases and runtime state
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sql
+*.lock
+
+# Logs
+*.log
+
+# Local runtime output
+eraseme/
+orchestra
+test_workspace/
+
+# Agent-local folders
+.kanban-orchestra/
+.claude/
+.gemini/
+.codex/
+.agents/
+.kilo/

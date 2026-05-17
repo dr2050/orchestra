@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+_ko_bin_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+_ko_default_orchestra_dir="$(cd -- "$_ko_bin_dir/.." && pwd)"
+
+export ORCHESTRA_DIR="${ORCHESTRA_DIR:-$_ko_default_orchestra_dir}"
+
+ko_python="$ORCHESTRA_DIR/.venv/bin/python"
+
+if [[ ! -x "$ko_python" ]]; then
+  cat >&2 <<EOF
+error: Orchestra Python environment not found at:
+  $ko_python
+
+Create it with:
+  "$ORCHESTRA_DIR/shared_scripts/bootstrap-python-env.sh"
+EOF
+  exit 2
+fi
