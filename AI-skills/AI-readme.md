@@ -11,22 +11,22 @@ How each agent discovers and loads custom commands and skills:
 
 ## Adding a Skill to All Three Agents
 
-All skills live in `AI-skills/{skill-name}.md` as the canonical source. Each agent gets a thin wrapper in its own skills directory that points to the canonical file.
+All skills live in `$ORCHESTRA_DIR/AI-skills/{skill-name}.md` as the canonical source. Each agent gets a thin wrapper in its own skills directory that points to the canonical file.
 
 ### 1. Write the canonical skill
 
-Create `AI-skills/{skill-name}.md` with the instructions the agent should follow.
+Create `$ORCHESTRA_DIR/AI-skills/{skill-name}.md` with the instructions the agent should follow.
 
 ### 2. Start the skill file with a one-line summary
 
-The wrapper sync script reads `AI-skills/{skill-name}.md` directly. It uses the first non-empty line of the file as the wrapper description, so keep that opening line short and descriptive.
+The wrapper sync script reads `$ORCHESTRA_DIR/AI-skills/{skill-name}.md` directly. It uses the first non-empty line of the file as the wrapper description, so keep that opening line short and descriptive.
 
 ### 3. Sync wrappers into the target repo
 
 From the repo that should receive the wrappers:
 
 ```bash
-ko-sync-skills
+"$ORCHESTRA_DIR/bin/ko-sync-skills"
 ```
 
 This creates or refreshes:

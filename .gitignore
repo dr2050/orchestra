@@ -24,7 +24,7 @@ eraseme/
 orchestra
 test_workspace/
 
-# Agent-local folders
+# Generated agent-local folders. Canonical source lives in AI-skills/.
 .kanban-orchestra/
 .claude/
 .gemini/

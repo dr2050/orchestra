@@ -7,14 +7,12 @@ and small improvements are welcome.
 
 ```bash
 git clone https://github.com/dr2050/orchestra.git
-cd orchestra
-./shared_scripts/bootstrap-python-env.sh
-export ORCHESTRA_DIR="$PWD"
-export PATH="$ORCHESTRA_DIR/bin:$PATH"
+export ORCHESTRA_DIR="$PWD/orchestra"
+"$ORCHESTRA_DIR/shared_scripts/bootstrap-python-env.sh"
 ```
 
-Agent CLIs are not bundled. Install and authenticate any `codex`, `claude`,
-`gemini`, `kilo`, or other model CLI you choose to configure locally.
+Agent CLIs are not bundled. Install and authenticate whatever local model CLI
+commands you choose to configure.
 
 ## Before Sending Changes
 
@@ -26,7 +24,7 @@ Agent CLIs are not bundled. Install and authenticate any `codex`, `claude`,
 - Run the test suite from this checkout:
 
 ```bash
-bin/ko-test
+"$ORCHESTRA_DIR/bin/ko-test"
 ```
 
 ## Documentation

@@ -9,12 +9,12 @@ toward a clean landed commit.
 
 In `## CLI Commands Available` below, `task` is shorthand for:
 
-    ko-task
+    "$ORCHESTRA_DIR/bin/ko-task"
 
-Expand `task` to `ko-task` when running commands, or define the alias once in
-your shell:
+Expand `task` to `"$ORCHESTRA_DIR/bin/ko-task"` when running commands, or
+define the shell function once in your shell:
 
-    alias task='ko-task'
+    task() { "$ORCHESTRA_DIR/bin/ko-task" "$@"; }
 
 ## Lifecycle
 

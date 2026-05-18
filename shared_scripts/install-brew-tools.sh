@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# Install the CLI utilities listed in $ORCHESTRA_DIR/global-agent-instructions.md.
+# Install optional local helper CLI utilities used by the author's workflows.
 #
-# This is the agent-tooling baseline: every binary the global agent instructions
-# tell Claude/Codex/Gemini to prefer over the standard alternatives. Keep this
-# list in lockstep with the canonical instructions file.
+# This is a convenience script, not required Orchestra setup.
 #
 # Idempotent: skips anything already installed; never triggers an upgrade.
 #
@@ -39,9 +37,8 @@ run() {
   fi
 }
 
-# Agent CLI utilities. Each entry is the Homebrew formula name.
+# Helper CLI utilities. Each entry is the Homebrew formula name.
 # Trailing "# binary: <name>" comments map formulae whose binary differs.
-# Source of truth: $ORCHESTRA_DIR/global-agent-instructions.md
 FORMULAE=(
   ripgrep        # binary: rg
   fd

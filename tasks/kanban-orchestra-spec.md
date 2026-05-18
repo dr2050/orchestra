@@ -669,10 +669,10 @@ When `orchestra-ui` is running, local operators can control the orchestrator it
 supervises through repo-local JSON control files:
 
 ```bash
-ko-ui --orchestrator-control status
-ko-ui --orchestrator-control start
-ko-ui --orchestrator-control stop
-ko-ui --orchestrator-control break
+"$ORCHESTRA_DIR/bin/ko-ui" --orchestrator-control status
+"$ORCHESTRA_DIR/bin/ko-ui" --orchestrator-control start
+"$ORCHESTRA_DIR/bin/ko-ui" --orchestrator-control stop
+"$ORCHESTRA_DIR/bin/ko-ui" --orchestrator-control break
 ```
 
 The control path is local-only and requires a live `orchestra-ui` supervisor

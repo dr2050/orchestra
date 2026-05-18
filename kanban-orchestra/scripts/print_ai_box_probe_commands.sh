@@ -42,7 +42,7 @@ python3 "\$ORCHESTRA_DIR/kanban-orchestra/scripts/probe_sqlite_visibility.py" \\
 5. If you want to seed a fresh probe repo on the host before entering the container:
 mkdir -p "$(printf '%s' "${PROBE_DIR}")"
 cd "$(printf '%s' "${PROBE_DIR}")"
-ko-init-test-repo
+"\$ORCHESTRA_DIR/bin/ko-init-test-repo"
 
 Notes:
 - ai-box mounts the current host directory at /work, so /work/kanban-orchestra.db is the host file ${PROBE_DIR}/kanban-orchestra.db

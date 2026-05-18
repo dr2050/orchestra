@@ -5,7 +5,7 @@ the Open Agent Standard path supported by Kilo.
 
 Intended invocation:
 
-  ko-sync-skills <target-repo>
+  "$ORCHESTRA_DIR/bin/ko-sync-skills" <target-repo>
 
 This script is meant to be run from the Orchestra checkout referenced by
 `$ORCHESTRA_DIR`, so the canonical skills come from

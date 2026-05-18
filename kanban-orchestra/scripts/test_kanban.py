@@ -867,7 +867,7 @@ class TestPromptAssembly(unittest.TestCase):
         }
         prompt = orchestrator.build_prompt(task, "commit-review", "codex", [])
         self.assertIn("Reviewer Handoff", prompt)
-        self.assertIn("ko-task", prompt)
+        self.assertIn('"$ORCHESTRA_DIR/bin/ko-task"', prompt)
         self.assertIn("trust the maker", prompt.lower().replace("\n", " "))
         # Reviewer handoff should NOT appear in commit-make prompts
         make_prompt = orchestrator.build_prompt(task | {"next_step": "commit-make"}, "commit-make", "claude", [])

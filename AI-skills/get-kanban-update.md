@@ -29,13 +29,13 @@ Runs the canonical status wrapper from `$ORCHESTRA_DIR` against the current repo
 Run from anywhere inside the repo:
 
 ```bash
-ko-get-update
+"$ORCHESTRA_DIR/bin/ko-get-update"
 ```
 
 Optional flag:
 
 ```bash
-ko-get-update --db <path-to-kanban-orchestra.db>
+"$ORCHESTRA_DIR/bin/ko-get-update" --db <path-to-kanban-orchestra.db>
 ```
 
 ## Exit codes
@@ -62,5 +62,5 @@ The **ATTENTION** line is the quick answer. Common values:
 2. If this fails, stop and tell the user they must run from inside a git repo.
 3. Check that `$ORCHESTRA_DIR` is set and that `"$ORCHESTRA_DIR/bin/ko-get-update"` exists. If not, stop and tell the user the Orchestra tooling environment is not configured.
 4. Check that `$(git rev-parse --show-toplevel)/kanban-orchestra.db` exists. If not, stop and tell the user this repo does not have Kanban Orchestra initialized.
-5. Run: `ko-get-update`
+5. Run: `"$ORCHESTRA_DIR/bin/ko-get-update"`
 6. Report the output to the user verbatim, then offer a brief interpretation if they want one.

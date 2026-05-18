@@ -282,7 +282,7 @@ def _build_reviewer_handoff(task, comments, skip_build_policy=False):
     return f"""## Reviewer Handoff
 
 - **Repo root:** `{repo_root}`
-- **Task CLI:** `task <subcommand>` (shorthand defined in shared context above; expands to `ko-task`)
+- **Task CLI:** `task <subcommand>` (shorthand defined in shared context above; expands to `"$ORCHESTRA_DIR/bin/ko-task"`)
 {policy_note}
 {maker_summary}
 

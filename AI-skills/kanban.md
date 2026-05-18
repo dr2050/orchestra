@@ -30,23 +30,19 @@ commands, and quick stuck/not-stuck checks.
 
 This skill requires `$ORCHESTRA_DIR` to point at the Orchestra installation
 or checkout root. That installation provides the wrapper commands, including
-`ko-kanban`, `ko-task`, `ko-dashboard`, and `ko-orchestrator`. For normal use,
-put those wrappers on PATH:
-
-```bash
-export PATH="$ORCHESTRA_DIR/bin:$PATH"
-```
+`ko-kanban`, `ko-task`, and `ko-ui`. Invoke them through
+`"$ORCHESTRA_DIR/bin/..."`; do not assume they are on `PATH`.
 
 ## Task CLI shorthand
 
 The CLI is exposed through the `ko-task` wrapper. Define `task` once in your shell:
 
 ```bash
-alias task='ko-task'
+task() { "$ORCHESTRA_DIR/bin/ko-task" "$@"; }
 ```
 
-All commands below use that shorthand. If you don't set the alias, use
-`ko-task` directly.
+All commands below use that shorthand. If you don't set the function, use
+`"$ORCHESTRA_DIR/bin/ko-task"` directly.
 
 ## Workspace rule
 
@@ -83,7 +79,7 @@ modify under that root.
    - Prompts: `$ORCHESTRA_DIR/kanban-orchestra/prompts/`
 6. Bootstrap the repo:
    ```bash
-   ko-kanban
+   "$ORCHESTRA_DIR/bin/ko-kanban"
    ```
 7. Report the resolved context: repo root, orchestra path, kanban orchestra
    root, DB path, orchestrator output path, and whether the DB was created
@@ -158,19 +154,17 @@ task log <task-id> "<message>"
 ## Process control
 
 ```bash
-ko-orchestrator
-ko-dashboard
-ko-ui
+"$ORCHESTRA_DIR/bin/ko-ui"
 ```
 
 When `ko-ui` is running, it supervises both the dashboard and orchestrator.
 Use its local control path for operator actions instead of PID hunting:
 
 ```bash
-ko-ui --orchestrator-control status
-ko-ui --orchestrator-control start
-ko-ui --orchestrator-control stop
-ko-ui --orchestrator-control break
+"$ORCHESTRA_DIR/bin/ko-ui" --orchestrator-control status
+"$ORCHESTRA_DIR/bin/ko-ui" --orchestrator-control start
+"$ORCHESTRA_DIR/bin/ko-ui" --orchestrator-control stop
+"$ORCHESTRA_DIR/bin/ko-ui" --orchestrator-control break
 ```
 
 Control semantics:
@@ -205,8 +199,11 @@ at the top of the next polling loop after the current task finishes, logs the
 detection, deletes the file, and exits.
 
 Notes:
+- Use `ko-ui` for normal operator control. It owns the supervised dashboard
+  and orchestrator lifecycle.
 - `orchestrator.py` has no argument parser; running `--help` starts the loop.
-- `dashboard.py` serves on `http://127.0.0.1:8427` by default.
+- The dashboard chooses a free port at runtime. Use the Browser button in
+  `ko-ui` to open the HTML dashboard instead of assuming a fixed port.
 
 ## Default operating pattern
 
@@ -226,6 +223,9 @@ Notes:
 
 ## Important notes
 
+- Orchestra is sensitive to dirty worktrees. The orchestrator refuses to
+  launch when the work repo is dirty, and active queue processing can block if
+  unexpected uncommitted changes appear.
 - A task needs a branch and a meaningful `next_step` before it can be set
   to `ready`.
 - Pass `--branch` explicitly when creating tasks; do not rely on prompts.
@@ -241,15 +241,15 @@ Notes:
 
 ## Stuck/not-stuck checks
 
-First choice: the dashboard.
+First choice: `orchestra-ui`.
 
 ```bash
-ko-dashboard
-# then open http://127.0.0.1:8427
+"$ORCHESTRA_DIR/bin/ko-ui"
 ```
 
-The overview page shows orchestrator status, the active task, reviewer
-state, and current orchestrator output.
+Use the Browser button in `orchestra-ui` to open the HTML dashboard. The UI
+also shows orchestrator status, the active task, reviewer state, and current
+orchestrator output.
 
 CLI-level state check via `orchestrator_runtime`:
 
