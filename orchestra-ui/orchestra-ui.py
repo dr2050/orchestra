@@ -59,7 +59,10 @@ def _launch_repo_root() -> Path:
 
 
 WORK_REPO_ROOT = _launch_repo_root()
-WORK_REPO_LABEL = WORK_REPO_ROOT.name or str(WORK_REPO_ROOT)
+
+
+def _work_repo_label(repo_root: Path = WORK_REPO_ROOT) -> str:
+    return repo_root.name or str(repo_root)
 
 
 def _current_git_branch(repo_root: Path = WORK_REPO_ROOT) -> str:
@@ -73,11 +76,11 @@ def _current_git_branch(repo_root: Path = WORK_REPO_ROOT) -> str:
         )
     except Exception:
         return "unknown"
-    return result.stdout.strip() or "unknown"
+    return result.stdout.strip() or "detached"
 
 
-def _current_git_branch_label(repo_root: Path = WORK_REPO_ROOT) -> str:
-    return f"branch: {_current_git_branch(repo_root)}"
+def _header_title(repo_root: Path = WORK_REPO_ROOT) -> str:
+    return f"Orchestra UI - {_work_repo_label(repo_root)} ({_current_git_branch(repo_root)})"
 
 
 # ── Log colorizer ─────────────────────────────────────────────────────────────
@@ -571,13 +574,6 @@ class OrchestraApp(App):
         height: 1fr;
     }
 
-    #branch-readout {
-        height: 1;
-        padding: 0 1;
-        color: $text-muted;
-        content-align: left middle;
-    }
-
     #quit-modal {
         background: $surface;
         border: thick $primary;
@@ -612,7 +608,7 @@ class OrchestraApp(App):
 
     def __init__(self, auto_start: bool = True):
         super().__init__()
-        self.title = f"Orchestra UI - {WORK_REPO_LABEL}"
+        self.title = _header_title()
         self.processes     = [ManagedProcess(d["name"], d["cmd"]) for d in PROCESS_DEFS]
         self.processes.append(LatestRunLogTail())
         self.selected_index = 0
@@ -642,7 +638,6 @@ class OrchestraApp(App):
         with Vertical(id="output-panel"):
             yield Static(f"Output: {self.processes[0].name}", id="output-title")
             yield RichLog(id="process-log", auto_scroll=True, markup=True, wrap=True)
-        yield Static(_current_git_branch_label(), id="branch-readout")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -655,7 +650,7 @@ class OrchestraApp(App):
         for button in self.query("#topbar-buttons Button"):
             button.can_focus = False
         self._refresh_action_buttons()
-        self._refresh_branch_readout(force=True)
+        self._refresh_header_title(force=True)
         self.set_focus(None)
 
     # ── Polling (output only — no ps -ax here) ────────────────────────────────
@@ -677,14 +672,14 @@ class OrchestraApp(App):
             self._log_indices[i] = total
         self._refresh_action_buttons()
         self._refresh_output_title()
-        self._refresh_branch_readout()
+        self._refresh_header_title()
 
-    def _refresh_branch_readout(self, force: bool = False) -> None:
+    def _refresh_header_title(self, force: bool = False) -> None:
         now = time.monotonic()
         if not force and now - self._last_branch_refresh < BRANCH_REFRESH_INTERVAL:
             return
         self._last_branch_refresh = now
-        self.query_one("#branch-readout", Static).update(_current_git_branch_label())
+        self.title = _header_title()
 
     def _refresh_output_title(self) -> None:
         proc  = self.processes[self.selected_index]

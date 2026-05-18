@@ -59,7 +59,7 @@ class TestGitBranchReadout(unittest.TestCase):
 
     def test_current_git_branch_falls_back_when_detached(self):
         with patch.object(orchestra_ui.subprocess, "run", return_value=SimpleNamespace(stdout="\n")):
-            self.assertEqual(orchestra_ui._current_git_branch(Path("/repo")), "unknown")
+            self.assertEqual(orchestra_ui._current_git_branch(Path("/repo")), "detached")
 
     def test_current_git_branch_falls_back_on_git_failure(self):
         error = orchestra_ui.subprocess.CalledProcessError(1, ["git", "branch", "--show-current"])
@@ -67,9 +67,9 @@ class TestGitBranchReadout(unittest.TestCase):
         with patch.object(orchestra_ui.subprocess, "run", side_effect=error):
             self.assertEqual(orchestra_ui._current_git_branch(Path("/repo")), "unknown")
 
-    def test_current_git_branch_label_is_compact(self):
+    def test_header_title_includes_repo_and_branch(self):
         with patch.object(orchestra_ui, "_current_git_branch", return_value="feature-x"):
-            self.assertEqual(orchestra_ui._current_git_branch_label(Path("/repo")), "branch: feature-x")
+            self.assertEqual(orchestra_ui._header_title(Path("/repo")), "Orchestra UI - repo (feature-x)")
 
 
 class FakeProcess:
