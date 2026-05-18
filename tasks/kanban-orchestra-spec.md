@@ -112,6 +112,8 @@ These rules define the system.
 - `done` means the task's commit was finalized and submitted.
 - A task must have a branch before it can be set to `ready`.
 - A task should have a meaningful `next_step` before it is set to `ready`.
+- Tasks on `master` or `main` are disabled by default unless the work repo
+  explicitly opts in with `ALLOW_TASKS_ON_MASTER` in `AGENTS.md`.
 - A dirty worktree blocks pickup of a normal `commit-make` task.
 - The orchestrator processes one pinned task at a time through its full local loop.
 - No other task may leapfrog between phases while a pinned task is still active.
@@ -356,6 +358,36 @@ On the subsequent Path B after that review approves, the build should be clean
 `repo_policy.read_skip_build_until_approved(repo_root)` is the single parsing
 function. All orchestrator and prompt behavior is driven by this function's output.
 
+## Master/Main Task Opt-In (ALLOW_TASKS_ON_MASTER)
+
+Fresh repos should not accidentally queue or run Kanban work on their primary
+branch. Repos that intentionally operate directly on `master` or `main` opt in by
+adding this exact standalone line to their root `AGENTS.md`:
+
+```
+ALLOW_TASKS_ON_MASTER
+```
+
+The marker must appear as a standalone line (leading/trailing whitespace is ignored).
+Freeform prose containing the string, including colon variants such as
+`ALLOW_TASKS_ON_MASTER: true`, does not qualify.
+
+When the marker is absent:
+
+- `task add --branch master` and `task add --branch main` fail.
+- `task set --branch master` and `task set --branch main` fail.
+- `task set --status ready` fails when the resulting branch is `master` or
+  `main`, including tasks that already carry that branch.
+- The orchestrator defensively blocks any existing ready task on `master` or
+  `main` before launching an agent and records a durable comment explaining the
+  policy and remediation.
+
+When the marker is present, these operations are allowed and task prompt context
+surfaces `allow_tasks_on_master: yes` for tasks on `master` or `main`.
+
+`repo_policy.read_allow_tasks_on_master(repo_root)` is the single parsing
+function. CLI and orchestrator behavior is driven by this function's output.
+
 ## CLI Contract
 
 `task.py` is the canonical mutation and inspection interface for humans and agents.
@@ -392,6 +424,9 @@ task restore
 - Parented child tasks inherit the parent branch.
 - `--branch` is not allowed when creating or directly editing a child task.
 - Setting `status=ready` requires a branch.
+- `master` and `main` branches require `ALLOW_TASKS_ON_MASTER` as a standalone
+  line in the work repo `AGENTS.md` before tasks can be added, retargeted, or
+  set to `ready` on those branches.
 - In agent or non-interactive mode, missing branch on `status=ready` is an error.
 - `task comment --message-stdin` reads the full message from stdin and is the preferred form for multi-line or shell-sensitive text.
 - `task delete` only works for tasks still in `status=none`.
@@ -611,6 +646,8 @@ A ready task is eligible for pickup when:
 - its own workflow state allows the step to run
 - child ordering allows it to run, when it belongs to a supertask
 - either no task is currently `blocked`, or the task has `allow_when_blocked = true`
+- if its branch is `master` or `main`, the repo has opted in with
+  `ALLOW_TASKS_ON_MASTER`
 
 Ready tasks skipped by the blocked-task gate stay `ready`. The orchestrator logs the
 skip when the gate first applies to that task.
@@ -846,6 +883,8 @@ Rules:
 
 - A task must have a branch before it becomes `ready`.
 - A task should have a meaningful `next_step` before it becomes `ready`.
+- A task on `master` or `main` requires `ALLOW_TASKS_ON_MASTER` as a standalone
+  line in `AGENTS.md`; otherwise use a feature branch.
 - For child tasks, the branch comes from the parent supertask.
 - Use `--allow-when-blocked` when a task should remain eligible while another task is `blocked`.
 

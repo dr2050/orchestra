@@ -819,6 +819,20 @@ class TestPromptAssembly(unittest.TestCase):
         self.assertIn("claude", prompt)
         self.assertIn("coder", prompt)
 
+    def test_build_prompt_surfaces_allow_tasks_on_master_policy_for_master_task(self):
+        task = {
+            "id": 2, "title": "Master task",
+            "description": None, "branch": "master",
+            "status": "running", "next_step": "commit-make",
+            "review_round": 0, "last_review_decision": "none",
+            "commit_hash": None, "stash_ref": None, "coder_agent": "claude",
+        }
+        with patch.object(orchestrator.repo_policy, "read_allow_tasks_on_master", return_value=True), \
+             patch.object(orchestrator, "_repo_root", return_value="/fake/repo"):
+            prompt = orchestrator.build_prompt(task, "commit-make", "claude", [])
+        self.assertIn("allow_tasks_on_master: yes", prompt)
+        self.assertIn("ALLOW_TASKS_ON_MASTER", prompt)
+
     def test_build_prompt_includes_comments(self):
         task = {
             "id": 1, "title": "T", "description": None,
@@ -1810,9 +1824,8 @@ class TestTaskCLI(unittest.TestCase):
     """Test task.py CLI via subprocess."""
 
     def setUp(self):
-        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        self.tmp.close()
-        self.db_path = self.tmp.name
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = str(Path(self.tmpdir.name) / "kanban-orchestra.db")
         self.task_py = str(Path(__file__).resolve().parent / "task.py")
         self.env = {
             **os.environ,
@@ -1821,13 +1834,7 @@ class TestTaskCLI(unittest.TestCase):
         }
 
     def tearDown(self):
-        for suffix in ("", "-shm", "-wal"):
-            path = Path(self.db_path + suffix)
-            if path.exists():
-                path.unlink()
-        sql_path = Path(self.db_path).with_name("kanban-orchestra.sql")
-        if sql_path.exists():
-            sql_path.unlink()
+        self.tmpdir.cleanup()
 
     def _run(self, *args, env=None, input_text=None):
         result = subprocess.run(
@@ -1836,6 +1843,12 @@ class TestTaskCLI(unittest.TestCase):
             capture_output=True, text=True, env=env or self.env,
         )
         return result
+
+    def _write_agents_md(self, content):
+        Path(self.tmpdir.name, "AGENTS.md").write_text(content, encoding="utf-8")
+
+    def _opt_in_master_tasks(self):
+        self._write_agents_md("ALLOW_TASKS_ON_MASTER\n")
 
     def test_add_and_show(self):
         r = self._run("add", "My test task", "--description", "Desc here", "--branch", "feat-1")
@@ -1882,6 +1895,105 @@ class TestTaskCLI(unittest.TestCase):
         self.assertEqual(queued["branch"], "new-branch")
         self.assertEqual(queued["status"], "ready")
         self.assertIsNotNone(queued["ready_at"])
+
+    def test_add_rejects_master_without_policy_marker(self):
+        r = self._run("add", "Master task", "--branch", "master")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("tasks on master/main are disabled by default", r.stderr)
+        self.assertIn("ALLOW_TASKS_ON_MASTER", r.stderr)
+
+    def test_add_rejects_main_without_policy_marker(self):
+        r = self._run("add", "Main task", "--branch", "main")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("tasks on master/main are disabled by default", r.stderr)
+
+    def test_add_allows_master_with_policy_marker(self):
+        self._opt_in_master_tasks()
+        r = self._run("add", "Master task", "--branch", "master")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["branch"], "master")
+
+    def test_add_allows_main_with_policy_marker(self):
+        self._opt_in_master_tasks()
+        r = self._run("add", "Main task", "--branch", "main")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["branch"], "main")
+
+    def test_set_branch_master_rejects_without_policy_marker(self):
+        r = self._run("add", "Retarget task", "--branch", "feat")
+        tid = json.loads(r.stdout)["id"]
+        r2 = self._run("set", str(tid), "--branch", "master")
+        self.assertNotEqual(r2.returncode, 0)
+        self.assertIn("tasks on master/main are disabled by default", r2.stderr)
+
+    def test_set_branch_main_rejects_without_policy_marker(self):
+        r = self._run("add", "Retarget task", "--branch", "feat")
+        tid = json.loads(r.stdout)["id"]
+        r2 = self._run("set", str(tid), "--branch", "main")
+        self.assertNotEqual(r2.returncode, 0)
+        self.assertIn("tasks on master/main are disabled by default", r2.stderr)
+
+    def test_set_branch_master_allows_with_policy_marker(self):
+        self._opt_in_master_tasks()
+        r = self._run("add", "Retarget task", "--branch", "feat")
+        tid = json.loads(r.stdout)["id"]
+        r2 = self._run("set", str(tid), "--branch", "master")
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        self.assertEqual(json.loads(r2.stdout)["branch"], "master")
+
+    def test_set_branch_main_allows_with_policy_marker(self):
+        self._opt_in_master_tasks()
+        r = self._run("add", "Retarget task", "--branch", "feat")
+        tid = json.loads(r.stdout)["id"]
+        r2 = self._run("set", str(tid), "--branch", "main")
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        self.assertEqual(json.loads(r2.stdout)["branch"], "main")
+
+    def test_set_status_ready_rejects_existing_master_without_policy_marker(self):
+        r = self._run("add", "Existing master task")
+        tid = json.loads(r.stdout)["id"]
+        conn = db.connect(self.db_path)
+        try:
+            db.update_task(conn, tid, branch="master")
+        finally:
+            conn.close()
+
+        r2 = self._run("set", str(tid), "--status", "ready")
+        self.assertNotEqual(r2.returncode, 0)
+        self.assertIn("tasks on master/main are disabled by default", r2.stderr)
+
+    def test_set_status_ready_rejects_existing_main_without_policy_marker(self):
+        r = self._run("add", "Existing main task")
+        tid = json.loads(r.stdout)["id"]
+        conn = db.connect(self.db_path)
+        try:
+            db.update_task(conn, tid, branch="main")
+        finally:
+            conn.close()
+
+        r2 = self._run("set", str(tid), "--status", "ready")
+        self.assertNotEqual(r2.returncode, 0)
+        self.assertIn("tasks on master/main are disabled by default", r2.stderr)
+
+    def test_set_status_ready_allows_existing_master_with_policy_marker(self):
+        self._opt_in_master_tasks()
+        r = self._run("add", "Existing master task", "--branch", "master")
+        tid = json.loads(r.stdout)["id"]
+        r2 = self._run("set", str(tid), "--status", "ready")
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        queued = json.loads(r2.stdout)
+        self.assertEqual(queued["branch"], "master")
+        self.assertEqual(queued["status"], "ready")
+
+    def test_set_status_ready_allows_existing_main_with_policy_marker(self):
+        self._opt_in_master_tasks()
+        r = self._run("add", "Existing main task", "--branch", "main")
+        tid = json.loads(r.stdout)["id"]
+        r2 = self._run("set", str(tid), "--status", "ready")
+        self.assertEqual(r2.returncode, 0, r2.stderr)
+        queued = json.loads(r2.stdout)
+        self.assertEqual(queued["branch"], "main")
+        self.assertEqual(queued["status"], "ready")
 
     def test_set_status_non_ready_clears_ready_at(self):
         r = self._run("add", "Queue task", "--branch", "my-branch")
@@ -4401,8 +4513,8 @@ class TestPickupRuntimeStep(unittest.TestCase):
         self.conn.close()
         os.unlink(self.tmp.name)
 
-    def _add_ready_task(self, next_step, kind="task"):
-        tid = db.add_task(self.conn, f"task-{next_step}", kind=kind, branch="b", coder_agent="claude")
+    def _add_ready_task(self, next_step, kind="task", branch="b"):
+        tid = db.add_task(self.conn, f"task-{next_step}", kind=kind, branch=branch, coder_agent="claude")
         db.update_task(self.conn, tid, status="ready", next_step=next_step)
         return tid
 
@@ -4457,6 +4569,24 @@ class TestPickupRuntimeStep(unittest.TestCase):
 
         task_after = db.get_task(self.conn, tid)
         self.assertEqual(task_after["status"], "ready")
+
+    def test_pickup_blocks_master_task_without_policy_marker_before_agent_launch(self):
+        tid = self._add_ready_task("commit-make", branch="master")
+        task = db.get_task(self.conn, tid)
+
+        with patch.object(orchestrator.repo_policy, "read_allow_tasks_on_master", return_value=False), \
+             patch.object(orchestrator, "run_agent") as run_agent:
+            result = orchestrator.process_pinned_task(task, self.conn)
+
+        self.assertFalse(result)
+        run_agent.assert_not_called()
+        blocked = db.get_task(self.conn, tid)
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertEqual(blocked["next_step"], "none")
+        comments = db.get_comments(self.conn, tid)
+        self.assertEqual(len(comments), 1)
+        self.assertIn("Tasks on master/main are disabled by default", comments[0]["message"])
+        self.assertIn("ALLOW_TASKS_ON_MASTER", comments[0]["message"])
 
 
 class TestRepositionTask(unittest.TestCase):
@@ -5121,6 +5251,33 @@ class TestRepoPolicy(unittest.TestCase):
         self._write_agents_md("SKIP_BUILD_UNTIL_APPROVED\n")
         result = repo_policy.read_skip_build_until_approved(Path(self.tmpdir))
         self.assertTrue(result)
+
+    def test_allow_tasks_on_master_absent_returns_false(self):
+        self._write_agents_md("# Agent instructions\n")
+        result = repo_policy.read_allow_tasks_on_master(self.tmpdir)
+        self.assertFalse(result)
+
+    def test_allow_tasks_on_master_standalone_present_returns_true(self):
+        self._write_agents_md("ALLOW_TASKS_ON_MASTER\n")
+        result = repo_policy.read_allow_tasks_on_master(self.tmpdir)
+        self.assertTrue(result)
+
+    def test_allow_tasks_on_master_with_whitespace_returns_true(self):
+        self._write_agents_md("  ALLOW_TASKS_ON_MASTER  \n")
+        result = repo_policy.read_allow_tasks_on_master(self.tmpdir)
+        self.assertTrue(result)
+
+    def test_allow_tasks_on_master_prose_mention_does_not_match(self):
+        self._write_agents_md(
+            "Add ALLOW_TASKS_ON_MASTER when a repo intentionally queues on master.\n"
+        )
+        result = repo_policy.read_allow_tasks_on_master(self.tmpdir)
+        self.assertFalse(result)
+
+    def test_allow_tasks_on_master_colon_variant_does_not_match(self):
+        self._write_agents_md("ALLOW_TASKS_ON_MASTER: true\n")
+        result = repo_policy.read_allow_tasks_on_master(self.tmpdir)
+        self.assertFalse(result)
 
 
 class TestDeferredBuildPolicy(unittest.TestCase):

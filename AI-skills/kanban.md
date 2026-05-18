@@ -116,6 +116,10 @@ Valid skip values: `commit-plan`, `commit-plan-review`, `commit-review`,
 
 All commands assume the `task` alias above.
 
+By default, Kanban tasks may not be queued or run on `master` or `main`.
+Use a feature branch, or explicitly opt the repo in by adding
+`ALLOW_TASKS_ON_MASTER` as a standalone line in the work repo's `AGENTS.md`.
+
 ```bash
 task add "<title>" \
     [--description "<description-as-markdown>"] \
@@ -212,6 +216,9 @@ Notes:
 - Before setting a task to `ready`, set `next_step` to a meaningful step
   (typically `commit-make`); tasks left at `next_step: none` get picked up
   and immediately dropped with no work executed.
+- `task add --branch master/main`, `task set --branch master/main`, and
+  `task set --status ready` for a task whose branch resolves to `master` or
+  `main` require the repo-local `ALLOW_TASKS_ON_MASTER` marker.
 - Use `--allow-when-blocked` for tasks that should stay runnable while
   another task is blocked.
 - `task comment` for durable notes and review outcomes; `task log` for
@@ -222,6 +229,9 @@ Notes:
 - A task needs a branch and a meaningful `next_step` before it can be set
   to `ready`.
 - Pass `--branch` explicitly when creating tasks; do not rely on prompts.
+- Use feature branches by default. The `ALLOW_TASKS_ON_MASTER` `AGENTS.md`
+  marker is an explicit opt-in for repos that intentionally operate on
+  `master` or `main`.
 - `task comment --message-stdin` is the safe form for multi-line or
   shell-sensitive text.
 - Code-review approvals/rejections (`--approval`, `--rejection`) require

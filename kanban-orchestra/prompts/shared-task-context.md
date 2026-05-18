@@ -59,6 +59,9 @@ target path you intend to modify so the trail is auditable.
   progress notes.
 - `commit_hash` records the landed commit when one exists. Task identity
   relies on the DB task `id`.
+- Tasks on `master` or `main` require an explicit repo opt-in marker:
+  `ALLOW_TASKS_ON_MASTER` as a standalone line in `AGENTS.md`. Without it,
+  use a feature branch.
 
 ## Recording Decisions (reviewers)
 

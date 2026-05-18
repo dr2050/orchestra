@@ -17,6 +17,10 @@ Usage:
     task delete <id>
     task dump                       # dump DB to kanban-orchestra.sql
     task restore
+
+Policy:
+    Branches master/main are disabled for tasks by default. Use a feature
+    branch, or add ALLOW_TASKS_ON_MASTER as a standalone line in AGENTS.md.
 """
 
 import argparse
@@ -25,15 +29,23 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 import db
 import config
+import repo_policy
 
 
 AGENTS = config.AGENTS
 VALID_SKIPS = {"commit-plan", "commit-plan-review", "commit-review", "commit-review-supertask"}
 NORMAL_TASK_SKIPS = {"commit-plan", "commit-plan-review", "commit-review"}
 SUPERTASK_SKIPS = {"commit-review-supertask"}
+MASTER_BRANCHES = {"master", "main"}
+MASTER_TASKS_DISABLED_ERROR = (
+    "Error: tasks on master/main are disabled by default. "
+    "Use a feature branch, or add ALLOW_TASKS_ON_MASTER as a standalone line "
+    "in AGENTS.md to explicitly opt in."
+)
 
 
 def _json_out(obj):
@@ -64,6 +76,24 @@ def _current_branch():
         return result.stdout.strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
+
+
+def _repo_root_for_policy():
+    return Path(db.get_db_path()).resolve().parent
+
+
+def _is_master_branch(branch):
+    return branch in MASTER_BRANCHES
+
+
+def _allow_tasks_on_master():
+    return repo_policy.read_allow_tasks_on_master(_repo_root_for_policy())
+
+
+def _reject_master_branch_without_marker(branch):
+    if _is_master_branch(branch) and not _allow_tasks_on_master():
+        print(MASTER_TASKS_DISABLED_ERROR, file=sys.stderr)
+        sys.exit(1)
 
 
 def _resolve_branch_for_ready(conn, task, branch_arg):
@@ -156,6 +186,9 @@ def cmd_add(args, conn):
             sys.exit(1)
         branch = parent["branch"]
 
+    if branch is not None:
+        _reject_master_branch_without_marker(branch)
+
     child_status = "ready" if parent_task_id is not None else None
     task_id = db.add_task(
         conn, args.title, description=args.description,
@@ -191,6 +224,7 @@ def cmd_set(args, conn):
                 file=sys.stderr,
             )
             sys.exit(1)
+        _reject_master_branch_without_marker(args.branch)
         fields["branch"] = args.branch
     if args.commit is not None:
         fields["commit_hash"] = args.commit
@@ -250,6 +284,7 @@ def cmd_set(args, conn):
     if args.status is not None:
         if args.status == "ready":
             branch = _resolve_branch_for_ready(conn, task, fields.get("branch"))
+            _reject_master_branch_without_marker(branch)
             fields["branch"] = branch
         fields["status"] = args.status
 
@@ -558,7 +593,14 @@ def _resolve_message_arg(args, command_name):
 # ── Argument parsing ──────────────────────────────────────────────────
 
 def build_parser():
-    parser = argparse.ArgumentParser(prog="task", description="Kanban Orchestra task CLI")
+    parser = argparse.ArgumentParser(
+        prog="task",
+        description="Kanban Orchestra task CLI",
+        epilog=(
+            "Policy: tasks on master/main are disabled by default. Use a feature "
+            "branch, or add ALLOW_TASKS_ON_MASTER as a standalone line in AGENTS.md."
+        ),
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     # add

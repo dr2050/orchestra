@@ -4,13 +4,8 @@
 from pathlib import Path
 
 
-def read_skip_build_until_approved(repo_root) -> bool:
-    """Return True if AGENTS.md in repo_root contains the SKIP_BUILD_UNTIL_APPROVED marker.
-
-    The marker must appear as a standalone line (after stripping whitespace):
-        SKIP_BUILD_UNTIL_APPROVED
-    Freeform prose mentioning the marker name does not count.
-    """
+def _read_standalone_marker(repo_root, marker: str) -> bool:
+    """Return True when AGENTS.md contains marker as its own stripped line."""
     agents_md = Path(repo_root) / "AGENTS.md"
     if not agents_md.exists():
         return False
@@ -19,6 +14,26 @@ def read_skip_build_until_approved(repo_root) -> bool:
     except OSError:
         return False
     for line in text.splitlines():
-        if line.strip() == "SKIP_BUILD_UNTIL_APPROVED":
+        if line.strip() == marker:
             return True
     return False
+
+
+def read_skip_build_until_approved(repo_root) -> bool:
+    """Return True if AGENTS.md in repo_root contains the SKIP_BUILD_UNTIL_APPROVED marker.
+
+    The marker must appear as a standalone line (after stripping whitespace):
+        SKIP_BUILD_UNTIL_APPROVED
+    Freeform prose mentioning the marker name does not count.
+    """
+    return _read_standalone_marker(repo_root, "SKIP_BUILD_UNTIL_APPROVED")
+
+
+def read_allow_tasks_on_master(repo_root) -> bool:
+    """Return True if AGENTS.md in repo_root contains the ALLOW_TASKS_ON_MASTER marker.
+
+    The marker must appear as a standalone line (after stripping whitespace):
+        ALLOW_TASKS_ON_MASTER
+    Freeform prose mentioning the marker name does not count.
+    """
+    return _read_standalone_marker(repo_root, "ALLOW_TASKS_ON_MASTER")

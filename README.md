@@ -127,6 +127,11 @@ ko-task add "Improve README" \
   --skip commit-plan
 ```
 
+Kanban tasks on `master` or `main` are disabled by default. Use a feature
+branch for normal work. Repos that intentionally queue work on `master` or
+`main` can opt in by adding `ALLOW_TASKS_ON_MASTER` as a standalone line in
+their root `AGENTS.md`.
+
 Inspect the queue, note the task ID, then mark the task ready:
 
 ```bash

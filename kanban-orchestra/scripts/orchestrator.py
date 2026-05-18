@@ -46,6 +46,11 @@ MAX_PRIOR_COMMENTS = config.MAX_PRIOR_COMMENTS
 POLL_INTERVAL = config.POLL_INTERVAL
 HEARTBEAT_INTERVAL = config.HEARTBEAT_INTERVAL
 STOP_AFTER_TASK_FILE = config.STOP_AFTER_TASK_FILE
+MASTER_BRANCHES = {"master", "main"}
+MASTER_TASKS_DISABLED_MESSAGE = (
+    "Tasks on master/main are disabled by default. Use a feature branch, or add "
+    "ALLOW_TASKS_ON_MASTER as a standalone line in AGENTS.md to explicitly opt in."
+)
 
 
 _log_conn = None
@@ -207,6 +212,17 @@ def _repo_root_for_subprocess():
     if repo_root.startswith("("):
         return None
     return repo_root
+
+
+def _master_tasks_allowed():
+    try:
+        return repo_policy.read_allow_tasks_on_master(_repo_root())
+    except Exception:
+        return False
+
+
+def _task_on_disallowed_master_branch(task):
+    return task.get("branch") in MASTER_BRANCHES and not _master_tasks_allowed()
 
 
 def _build_reviewer_handoff(task, comments, skip_build_policy=False):
@@ -384,6 +400,17 @@ def build_prompt(task, verb, agent_name, comments):
             "- skip_build_until_approved: yes "
             "(SKIP_BUILD_UNTIL_APPROVED marker detected in repo AGENTS.md — "
             "see Path A / Path B guidance below)"
+        )
+
+    try:
+        allow_master_policy = repo_policy.read_allow_tasks_on_master(_repo_root())
+    except Exception:
+        allow_master_policy = False
+    if task.get("branch") in MASTER_BRANCHES and allow_master_policy:
+        context_lines.append(
+            "- allow_tasks_on_master: yes "
+            "(ALLOW_TASKS_ON_MASTER marker detected in repo AGENTS.md — "
+            "this repo explicitly opts in to Kanban tasks on master/main)"
         )
 
     context_lines.extend([
@@ -1789,6 +1816,19 @@ def process_pinned_task(task, conn):
     task_id = task["id"]
 
     while True:
+        if _task_on_disallowed_master_branch(current):
+            db.update_task(conn, task_id, status="blocked", next_step="none")
+            db.add_comment(
+                conn,
+                task_id,
+                MASTER_TASKS_DISABLED_MESSAGE,
+                kind="comment",
+                author="orchestrator",
+            )
+            log(f"Blocked ready task on protected branch '{current['branch']}'", task_id)
+            update_runtime_after_task(conn, task_id, False)
+            return False
+
         db.update_task(conn, task_id, status="running")
         current = db.get_task(conn, task_id)
 

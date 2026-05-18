@@ -10,6 +10,8 @@
 
 There is no build step for this repo.
 
+ALLOW_TASKS_ON_MASTER
+
 Before staging changes, run the unit tests from this checkout:
 
 ```bash
