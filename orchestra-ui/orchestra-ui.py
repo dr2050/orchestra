@@ -578,7 +578,8 @@ class OrchestraApp(App):
         background: $surface;
         border: thick $primary;
         padding: 2 4;
-        width: 50;
+        width: 68;
+        max-width: 90%;
         height: auto;
         align: center middle;
     }
