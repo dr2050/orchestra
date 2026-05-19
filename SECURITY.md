@@ -28,8 +28,9 @@ against and what it does not:
 
 ### Recommended Deployment
 
-For anything beyond single-user local use — especially when tasks arrive via
-remote channels — run Orchestra under isolation:
+Always run Orchestra under isolation. A prompt-injected or misbehaving agent
+can access anything your user account can — credentials, SSH keys, other
+repos, browser state. This applies even for local-only use:
 
 - **Separate macOS user account** (recommended): create a dedicated user,
   install agent CLIs there, and route remote-control messages to that account.
