@@ -816,6 +816,21 @@ class TestPromptAssembly(unittest.TestCase):
         self.assertIn("claude", prompt)
         self.assertIn("coder", prompt)
 
+    def test_build_prompt_labels_description_as_markdown_source(self):
+        task = {
+            "id": 1, "title": "Fix bug",
+            "description": "## Goal\n\n- Fix `login`",
+            "branch": "fix-login", "status": "running",
+            "next_step": "commit-make", "review_round": 0,
+            "last_review_decision": "none", "commit_hash": None,
+            "stash_ref": None, "coder_agent": "claude",
+        }
+
+        prompt = orchestrator.build_prompt(task, "commit-make", "claude", [])
+
+        self.assertIn("- description_markdown:\n  ```markdown\n  ## Goal", prompt)
+        self.assertIn("  - Fix `login`\n  ```", prompt)
+
     def test_build_prompt_surfaces_allow_tasks_on_master_policy_for_master_task(self):
         task = {
             "id": 2, "title": "Master task",
