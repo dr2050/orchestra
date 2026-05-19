@@ -32,9 +32,10 @@ Always run Orchestra under isolation. A prompt-injected or misbehaving agent
 can access anything your user account can — credentials, SSH keys, other
 repos, browser state.
 
-- **Separate macOS user account** (recommended): create a dedicated user,
-  install agent CLIs there, and route remote-control messages to that account.
-  The primary user's files and credentials stay out of reach.
+- **Separate macOS user account** (recommended): create a dedicated non-admin
+  user without a login to your repository host (GitHub, GitLab, etc.). Install
+  agent CLIs there and route remote-control messages to that account. Your
+  primary user's files and credentials stay out of reach.
 - **OrbStack / Docker container**: run the orchestrator and agents inside a
   container with only the work repo mounted.
 - **`sandbox-exec` profile**: apply a macOS sandbox profile that restricts
