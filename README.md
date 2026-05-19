@@ -9,7 +9,21 @@ Orchestra queues them, assigns one CLI to code and another to review, runs
 rejection cycles on the staged diffs, and lands approved commits — while you
 do something else.
 
-<img src="docs/agent-with-kanban-skill-with-orchestrator-dashboard.png" alt="Kanban Agent & Dashboard" />
+<table>
+  <tr>
+    <td colspan="2">
+      <img src="docs/agent-with-kanban-skill-with-orchestrator-dashboard.png" alt="Kanban Agent and Dashboard" width="100%" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="docs/dashboard1.jpg" alt="Kanban dashboard task overview" width="100%" />
+    </td>
+    <td width="50%">
+      <img src="docs/dashboard2.jpg" alt="Kanban dashboard task detail" width="100%" />
+    </td>
+  </tr>
+</table>
 
 ## How It Works
 
