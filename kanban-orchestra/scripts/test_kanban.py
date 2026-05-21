@@ -887,6 +887,25 @@ class TestPromptAssembly(unittest.TestCase):
         make_prompt = orchestrator.build_prompt(task | {"next_step": "commit-make"}, "commit-make", "claude", [])
         self.assertNotIn("Reviewer Handoff", make_prompt)
 
+    def test_build_prompt_reviewer_quality_guidance(self):
+        """commit-review prompt distinguishes concrete quality issues from subjective nits."""
+        task = {
+            "id": 6, "title": "Polish prompt", "description": None,
+            "branch": "feat", "status": "running", "next_step": "commit-review",
+            "review_round": 0, "last_review_decision": "none",
+            "commit_hash": None, "stash_ref": None, "coder_agent": "claude",
+        }
+        prompt = orchestrator.build_prompt(task, "commit-review", "codex", [])
+        self.assertIn("Concrete quality or polish issues", prompt)
+        self.assertIn("maintainability", prompt)
+        self.assertIn("readability", prompt)
+        self.assertIn("UX", prompt)
+        self.assertIn("docs clarity", prompt)
+        self.assertIn("public presentation", prompt)
+        self.assertIn("Purely personal preferences or subjective style nits", prompt)
+        self.assertIn("Large refactors outside the task scope", prompt)
+        self.assertNotIn("Style, formatting, hypothetical improvements", prompt)
+
     def test_build_prompt_reviewer_handoff_includes_maker_commit_message(self):
         """Reviewer prompt prominently shows maker's most recent commit-message comment."""
         task = {

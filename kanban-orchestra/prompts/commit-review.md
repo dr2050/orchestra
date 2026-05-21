@@ -22,12 +22,23 @@ there instead of rebuilding context from scratch.
    - Does it accomplish what the title and description ask for?
    - Behavioral regressions vs the existing codebase
    - Logic errors in the new or modified code
+   - Concrete quality or polish issues that affect maintainability,
+     readability, UX, docs clarity, or public presentation, including:
+     - inconsistent local conventions or naming in touched code
+     - confusing or misleading wording in docs or prompts
+     - awkward formatting that harms readability
+     - UI/layout/accessibility polish defects
+     - screenshots or assets presented poorly
+     - missing or inadequate tests when the change is testable
    - Anything that contradicts the maker's commit message or validation summary
    - On rework, does it address the prior round's feedback?
 
    What NOT to check:
-   - Style, formatting, hypothetical improvements
+   - Purely personal preferences or subjective style nits with no concrete
+     quality impact
    - Things that were already there before this commit
+   - Large refactors outside the task scope
+   - Hypothetical improvements better handled as follow-up tasks
 4. **Record exactly one decision** — `--approval` or `--rejection` (the exact
    CLI form is in `## CLI Commands Available` above). Use the
    `review_round` shown in `## Task Context`.
