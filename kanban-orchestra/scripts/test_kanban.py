@@ -2604,7 +2604,7 @@ class TestKanbanCLI(unittest.TestCase):
             ".kanban-orchestra/",
             ".claude/",
             ".gemini/",
-            ".codex/",
+            ".agents/",
         ]:
             self.assertIn(entry, gitignore)
 
@@ -2742,13 +2742,6 @@ class TestSyncAiSkillWrappers(unittest.TestCase):
                     f"---\nname: {skill_name}\ndescription: {description}\n---\n\n"
                     f"Read and follow the instructions in `{canonical_path.resolve()}`.\n"
                 ),
-                ".codex/skills/kanban/SKILL.md": (
-                    f"---\nname: {skill_name}\ndescription: {description}\n---\n\n"
-                    f"# Kanban\n\n"
-                    f"Canonical instructions: `AI-skills/{skill_name}.md`\n\n"
-                    f"Load that file and follow it exactly. If this skill conflicts with the canonical file, "
-                    f"the canonical file wins.\n"
-                ),
             }
             for relative_path, content in legacy_files.items():
                 wrapper_path = target / relative_path
@@ -2766,7 +2759,28 @@ class TestSyncAiSkillWrappers(unittest.TestCase):
                 wrapper_path = target / relative_path
                 self.assertEqual(wrapper_path.read_text(encoding="utf-8"), expected)
 
-    def test_sync_skill_wrappers_skips_custom_wrapper_files(self):
+    def test_sync_skill_wrappers_removes_generated_obsolete_codex_wrappers(self):
+        with tempfile.TemporaryDirectory() as orchestra_tmp, tempfile.TemporaryDirectory() as repo_tmp:
+            orchestra_dir = Path(orchestra_tmp)
+            target = Path(repo_tmp)
+            _write_test_ai_skills(orchestra_dir)
+
+            skill_name = "kanban"
+            canonical_path = orchestra_dir / "AI-skills" / f"{skill_name}.md"
+            description = skill_wrappers._skill_description(canonical_path)
+            stale_wrapper = target / ".codex" / "skills" / skill_name / "SKILL.md"
+            stale_wrapper.parent.mkdir(parents=True, exist_ok=True)
+            stale_wrapper.write_text(
+                skill_wrappers.render_wrapper(skill_name, description, canonical_path),
+                encoding="utf-8",
+            )
+
+            summary = skill_wrappers.sync_skill_wrappers(target=target, orchestra_dir=orchestra_dir)
+
+            self.assertIn(".codex/skills/kanban/SKILL.md", summary["removed"])
+            self.assertFalse(stale_wrapper.exists())
+
+    def test_sync_skill_wrappers_keeps_custom_obsolete_codex_wrappers(self):
         with tempfile.TemporaryDirectory() as orchestra_tmp, tempfile.TemporaryDirectory() as repo_tmp:
             orchestra_dir = Path(orchestra_tmp)
             target = Path(repo_tmp)
@@ -2779,13 +2793,35 @@ class TestSyncAiSkillWrappers(unittest.TestCase):
                 "name: kanban\n"
                 "description: Custom local instructions.\n"
                 "---\n\n"
-                "Use the local team-specific kanban workflow instead of the shared one.\n"
+                "Use these custom Codex-only instructions.\n"
             )
             custom_wrapper.write_text(custom_content, encoding="utf-8")
 
             summary = skill_wrappers.sync_skill_wrappers(target=target, orchestra_dir=orchestra_dir)
 
             self.assertIn(".codex/skills/kanban/SKILL.md", summary["skipped"])
+            self.assertEqual(custom_wrapper.read_text(encoding="utf-8"), custom_content)
+
+    def test_sync_skill_wrappers_skips_custom_wrapper_files(self):
+        with tempfile.TemporaryDirectory() as orchestra_tmp, tempfile.TemporaryDirectory() as repo_tmp:
+            orchestra_dir = Path(orchestra_tmp)
+            target = Path(repo_tmp)
+            _write_test_ai_skills(orchestra_dir)
+
+            custom_wrapper = target / ".agents" / "skills" / "kanban" / "SKILL.md"
+            custom_wrapper.parent.mkdir(parents=True, exist_ok=True)
+            custom_content = (
+                "---\n"
+                "name: kanban\n"
+                "description: Custom local instructions.\n"
+                "---\n\n"
+                "Use the local team-specific kanban workflow instead of the shared one.\n"
+            )
+            custom_wrapper.write_text(custom_content, encoding="utf-8")
+
+            summary = skill_wrappers.sync_skill_wrappers(target=target, orchestra_dir=orchestra_dir)
+
+            self.assertIn(".agents/skills/kanban/SKILL.md", summary["skipped"])
             self.assertEqual(custom_wrapper.read_text(encoding="utf-8"), custom_content)
 
     def test_sync_skill_wrappers_picks_up_new_skill_file_automatically(self):
@@ -2821,8 +2857,8 @@ class TestSyncAiSkillWrappers(unittest.TestCase):
 
             summary = skill_wrappers.sync_skill_wrappers(target=target, orchestra_dir=orchestra_dir)
 
-            self.assertIn(".codex/skills/prep-for-review/SKILL.md", summary["created"])
-            wrapper_path = target / ".codex" / "skills" / "prep-for-review" / "SKILL.md"
+            self.assertIn(".agents/skills/prep-for-review/SKILL.md", summary["created"])
+            wrapper_path = target / ".agents" / "skills" / "prep-for-review" / "SKILL.md"
             self.assertIn(
                 'description: "**Note**: This is the ad-hoc manual workflow."',
                 wrapper_path.read_text(encoding="utf-8"),

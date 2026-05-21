@@ -111,7 +111,7 @@ Orchestra developed a skill-wrapper system to give agents portable
 capabilities:
 
 - Skills are Markdown prompt files installed into each agent's configuration
-  directory (`.claude/`, `.codex/`, etc.).
+  directory (`.claude/`, `.gemini/`, `.agents/`, etc.).
 - A sync script keeps skill wrappers consistent across agents.
 - Skills cover git operations, PR creation, kanban status queries, code
   review, and screenshot inspection.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Create or refresh thin AI skill wrappers for Claude, Gemini, Codex, and
-the Open Agent Standard path supported by Kilo.
+Create or refresh thin AI skill wrappers for Claude, Gemini, and
+the Open Agent Standard path supported by Codex and Kilo.
 
 Intended invocation:
 
@@ -16,11 +16,12 @@ written into a target repo under:
 
   .claude/skills/<skill>/SKILL.md
   .gemini/skills/<skill>/SKILL.md
-  .codex/skills/<skill>/SKILL.md
   .agents/skills/<skill>/SKILL.md
 
 The script only overwrites wrappers it can confidently identify as previously
-generated wrappers. Unknown or hand-edited files are left untouched.
+generated wrappers. Unknown or hand-edited files are left untouched. It also
+removes generated wrappers from obsolete output directories so agents do not
+see duplicate skills.
 """
 
 import argparse
@@ -30,7 +31,8 @@ import re
 from pathlib import Path
 
 
-AGENTS = ("claude", "gemini", "codex", "agents")
+AGENTS = ("claude", "gemini", "agents")
+OBSOLETE_AGENTS = ("codex",)
 
 _FRONT_MATTER_RE = re.compile(
     r"\A---\nname: (?P<name>[^\n]+)\ndescription: (?P<description>[^\n]+)\n---\n\n(?P<body>.*)\Z",
@@ -121,7 +123,7 @@ def is_generated_wrapper(content: str, skill_name: str, canonical_path: Path) ->
 def sync_skill_wrappers(target: Path, orchestra_dir: Path) -> dict[str, list[str]]:
     target = target.resolve()
     orchestra_dir = orchestra_dir.resolve()
-    summary = {"created": [], "updated": [], "unchanged": [], "skipped": []}
+    summary = {"created": [], "updated": [], "removed": [], "unchanged": [], "skipped": []}
 
     for canonical_path in _canonical_skill_files(orchestra_dir):
         skill_name = canonical_path.stem
@@ -150,14 +152,31 @@ def sync_skill_wrappers(target: Path, orchestra_dir: Path) -> dict[str, list[str
 
             summary["skipped"].append(relative_path)
 
+        for agent in OBSOLETE_AGENTS:
+            wrapper_path = target / f".{agent}" / "skills" / skill_name / "SKILL.md"
+            if not wrapper_path.exists():
+                continue
+            relative_path = str(wrapper_path.relative_to(target))
+            current_text = wrapper_path.read_text(encoding="utf-8")
+            if not is_generated_wrapper(current_text, skill_name, canonical_path):
+                summary["skipped"].append(relative_path)
+                continue
+            wrapper_path.unlink()
+            summary["removed"].append(relative_path)
+            for parent in (wrapper_path.parent, wrapper_path.parent.parent, wrapper_path.parent.parent.parent):
+                try:
+                    parent.rmdir()
+                except OSError:
+                    break
+
     return summary
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Create or refresh thin AI skill wrappers for Claude, Gemini, Codex, "
-            "and the Open Agent Standard path supported by Kilo. "
+            "Create or refresh thin AI skill wrappers for Claude, Gemini, "
+            "and the Open Agent Standard path supported by Codex and Kilo. "
             "Normally run this as "
             '`ko-sync-skills`.'
         )
@@ -190,12 +209,14 @@ def main() -> int:
         ("skipped", "Skipped"),
         ("created", "Added"),
         ("updated", "Updated"),
+        ("removed", "Removed"),
         ("unchanged", "All good"),
     ]
     print(
         "AI skill wrappers synchronized:"
         f" created={len(summary['created'])}"
         f" updated={len(summary['updated'])}"
+        f" removed={len(summary['removed'])}"
         f" unchanged={len(summary['unchanged'])}"
         f" skipped={len(summary['skipped'])}"
     )

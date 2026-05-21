@@ -28,6 +28,5 @@ test_workspace/
 .kanban-orchestra/
 .claude/
 .gemini/
-.codex/
 .agents/
 .kilo/

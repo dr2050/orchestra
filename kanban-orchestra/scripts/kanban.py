@@ -42,7 +42,7 @@ GITIGNORE_ENTRIES = [
     ".kanban-orchestra/",
     ".claude/",
     ".gemini/",
-    ".codex/",
+    ".agents/",
     "kanban-orchestra.db-shm",
     "kanban-orchestra.db-wal",
     "kanban-orchestra.lock",
