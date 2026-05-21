@@ -178,6 +178,133 @@ class TestOrchestraAppQuitFlow(unittest.TestCase):
                 self.assertEqual(orchestrator.killed, choice == "kill")
 
 
+class TestManagedProcessBlockerDetection(unittest.TestCase):
+    def test_managed_process_stores_resolved_cwd(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "repo"
+            link = root / "repo-link"
+            target.mkdir()
+            try:
+                link.symlink_to(target, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"symlink creation failed: {exc}")
+
+            proc = orchestra_ui.ManagedProcess("orchestrator", ["/python", "/script.py"], cwd=link)
+            expected = target.resolve()
+
+        self.assertEqual(proc.cwd, expected)
+
+    def test_process_cwd_from_proc_uses_readlink_when_available(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cwd = Path(tmpdir).resolve()
+            with patch.object(orchestra_ui.os, "readlink", return_value=str(cwd)):
+                self.assertEqual(orchestra_ui._process_cwd_from_proc(123), cwd)
+
+    def test_process_cwd_from_proc_returns_none_when_readlink_fails(self):
+        with patch.object(orchestra_ui.os, "readlink", side_effect=FileNotFoundError):
+            self.assertIsNone(orchestra_ui._process_cwd_from_proc(123))
+
+    def test_process_cwds_from_lsof_parses_single_pid(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cwd = Path(tmpdir).resolve()
+            result = SimpleNamespace(returncode=0, stdout=f"p123\nn{cwd}\n")
+
+            with patch.object(orchestra_ui.subprocess, "run", return_value=result):
+                self.assertEqual(orchestra_ui._process_cwds_from_lsof([123]), {123: cwd})
+
+    def test_process_cwds_from_lsof_returns_empty_when_lsof_fails(self):
+        result = SimpleNamespace(returncode=1, stdout="")
+
+        with patch.object(orchestra_ui.subprocess, "run", return_value=result):
+            self.assertEqual(orchestra_ui._process_cwds_from_lsof([123]), {})
+
+    def test_process_cwds_from_lsof_parses_multiple_pids(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cwd_one = (Path(tmpdir) / "one").resolve()
+            cwd_two = (Path(tmpdir) / "two").resolve()
+            result = SimpleNamespace(returncode=0, stdout=f"p111\nn{cwd_one}\np222\nn{cwd_two}\n")
+
+            with patch.object(orchestra_ui.subprocess, "run", return_value=result) as run:
+                self.assertEqual(
+                    orchestra_ui._process_cwds_from_lsof([111, 222]),
+                    {111: cwd_one, 222: cwd_two},
+                )
+
+        run.assert_called_once_with(
+            ["lsof", "-a", "-p", "111,222", "-d", "cwd", "-Fn"],
+            capture_output=True,
+            text=True,
+            timeout=1,
+        )
+
+    def test_find_blocker_pids_only_returns_same_repo_processes(self):
+        proc = orchestra_ui.ManagedProcess(
+            "orchestrator",
+            ["/python", "/shared/orchestra/kanban-orchestra/scripts/orchestrator.py"],
+            cwd=Path("/repo-a"),
+        )
+        proc.proc = SimpleNamespace(pid=111)
+        ps_output = "\n".join(
+            [
+                " 111 /python -u /shared/orchestra/kanban-orchestra/scripts/orchestrator.py",
+                " 222 /python -u /shared/orchestra/kanban-orchestra/scripts/orchestrator.py",
+                " 333 /python -u /shared/orchestra/kanban-orchestra/scripts/orchestrator.py",
+            ]
+        )
+
+        with patch.object(
+            orchestra_ui.subprocess,
+            "run",
+            return_value=SimpleNamespace(stdout=ps_output),
+        ), patch.object(
+            orchestra_ui,
+            "_process_cwd_from_proc",
+            return_value=None,
+        ) as from_proc, patch.object(
+            orchestra_ui,
+            "_process_cwds_from_lsof",
+            return_value={222: Path("/repo-a").resolve(), 333: Path("/repo-b").resolve()},
+        ) as from_lsof:
+            self.assertEqual(proc.find_blocker_pids(), [222])
+            from_proc.assert_any_call(222)
+            from_proc.assert_any_call(333)
+            self.assertNotIn(111, [call.args[0] for call in from_proc.call_args_list])
+            from_lsof.assert_called_once_with([222, 333])
+
+    def test_find_blocker_pids_skips_processes_with_unknown_cwd(self):
+        proc = orchestra_ui.ManagedProcess(
+            "dashboard",
+            ["/python", "/shared/orchestra/kanban-orchestra/scripts/dashboard.py"],
+            cwd=Path("/repo-a"),
+        )
+        proc.proc = SimpleNamespace(pid=111)
+        ps_output = " 222 /python -u /shared/orchestra/kanban-orchestra/scripts/dashboard.py"
+
+        with patch.object(
+            orchestra_ui.subprocess,
+            "run",
+            return_value=SimpleNamespace(stdout=ps_output),
+        ), patch.object(orchestra_ui, "_process_cwd_from_proc", return_value=None), patch.object(
+            orchestra_ui,
+            "_process_cwds_from_lsof",
+            return_value={},
+        ):
+            self.assertEqual(proc.find_blocker_pids(), [])
+
+    def test_find_blocker_pids_returns_empty_before_process_start(self):
+        proc = orchestra_ui.ManagedProcess(
+            "orchestrator",
+            ["/python", "/shared/orchestra/kanban-orchestra/scripts/orchestrator.py"],
+            cwd=Path("/repo-a"),
+        )
+
+        with patch.object(orchestra_ui.subprocess, "run") as run:
+            self.assertEqual(proc.find_blocker_pids(), [])
+
+        run.assert_not_called()
+
+
 class TestOrchestratorControl(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()

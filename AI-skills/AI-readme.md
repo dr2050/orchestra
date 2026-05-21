@@ -4,7 +4,7 @@ How each agent discovers and loads custom commands and skills:
 
 - **Claude**: https://code.claude.com/docs/en/slash-commands
 - **Gemini CLI**: https://geminicli.com/docs/cli/gemini-md/
-- **Codex (skills)**: https://developers.openai.com/codex/skills
+- **Codex / Open Agent Standard skills**: https://developers.openai.com/codex/skills
 - **Codex (AGENTS.md)**: https://developers.openai.com/codex/guides/agents-md
 
 ---
@@ -33,8 +33,11 @@ This creates or refreshes:
 
 - `.claude/skills/{skill-name}/SKILL.md`
 - `.gemini/skills/{skill-name}/SKILL.md`
-- `.codex/skills/{skill-name}/SKILL.md`
-- `.agents/skills/{skill-name}/SKILL.md`
+- `.agents/skills/{skill-name}/SKILL.md` (Open Agent Standard path used by Codex-compatible agents)
+
+It also removes generated wrappers from obsolete output paths such as
+`.codex/skills/{skill-name}/SKILL.md`. Hand-edited or unknown files are left
+untouched.
 
 Each wrapper uses the same thin shared format:
 

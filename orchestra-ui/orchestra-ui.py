@@ -115,13 +115,49 @@ def _kill_hint() -> str:
     return f"[dim]{ts}[/dim] [bold red]Critical error - use Kill Blocker in the action buttons[/bold red]"
 
 
+def _process_cwd_from_proc(pid: int) -> Optional[Path]:
+    proc_cwd = Path("/proc") / str(pid) / "cwd"
+    try:
+        return Path(os.readlink(proc_cwd)).resolve()
+    except OSError:
+        return None
+
+
+def _process_cwds_from_lsof(pids: list[int]) -> dict[int, Path]:
+    if not pids:
+        return {}
+    try:
+        result = subprocess.run(
+            ["lsof", "-a", "-p", ",".join(str(pid) for pid in pids), "-d", "cwd", "-Fn"],
+            capture_output=True,
+            text=True,
+            timeout=1,
+        )
+    except Exception:
+        return {}
+
+    if result.returncode != 0:
+        return {}
+
+    cwd_by_pid = {}
+    current_pid = None
+    for line in result.stdout.splitlines():
+        if line.startswith("p"):
+            try:
+                current_pid = int(line[1:])
+            except ValueError:
+                current_pid = None
+        elif line.startswith("n") and current_pid is not None:
+            cwd_by_pid[current_pid] = Path(line[1:]).resolve()
+    return cwd_by_pid
+
 # ── Process management ────────────────────────────────────────────────────────
 
 class ManagedProcess:
     def __init__(self, name: str, cmd: list[str], cwd: Path = WORK_REPO_ROOT):
         self.name = name
         self.cmd = cmd
-        self.cwd = cwd
+        self.cwd = cwd.resolve()
         self.proc: Optional[subprocess.Popen] = None
         self.lines: collections.deque = collections.deque(maxlen=MAX_LOG_LINES)
         self.browser_url: Optional[str] = self._infer_browser_url()
@@ -237,12 +273,14 @@ class ManagedProcess:
         return all_lines[since_index:], total
 
     def find_blocker_pids(self) -> list[int]:
-        """Return PIDs of other processes running the same script."""
+        """Return same-repo PIDs of other processes running the same script."""
         script = self.cmd[-1]
         own_pid = self.pid
+        if own_pid is None:
+            return []
         try:
             result = subprocess.run(["ps", "-ax"], capture_output=True, text=True)
-            pids = []
+            candidate_pids = []
             for line in result.stdout.splitlines():
                 if script not in line:
                     continue
@@ -253,9 +291,20 @@ class ManagedProcess:
                     pid = int(parts[0])
                 except ValueError:
                     continue
-                if pid != own_pid:
-                    pids.append(pid)
-            return pids
+                if pid == own_pid:
+                    continue
+                candidate_pids.append(pid)
+
+            cwd_by_pid = {}
+            lsof_pids = []
+            for pid in candidate_pids:
+                proc_cwd = _process_cwd_from_proc(pid)
+                if proc_cwd is None:
+                    lsof_pids.append(pid)
+                else:
+                    cwd_by_pid[pid] = proc_cwd
+            cwd_by_pid.update(_process_cwds_from_lsof(lsof_pids))
+            return [pid for pid in candidate_pids if cwd_by_pid.get(pid) == self.cwd]
         except Exception:
             return []
 

@@ -118,7 +118,7 @@ print("Wrote README.md")
     ".kanban-orchestra/\n"
     ".claude/\n"
     ".gemini/\n"
-    ".codex/\n",
+    ".agents/\n",
     encoding="utf-8",
 )
 print("Wrote .gitignore")

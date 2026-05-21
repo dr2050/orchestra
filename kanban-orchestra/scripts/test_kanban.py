@@ -887,6 +887,25 @@ class TestPromptAssembly(unittest.TestCase):
         make_prompt = orchestrator.build_prompt(task | {"next_step": "commit-make"}, "commit-make", "claude", [])
         self.assertNotIn("Reviewer Handoff", make_prompt)
 
+    def test_build_prompt_reviewer_quality_guidance(self):
+        """commit-review prompt distinguishes concrete quality issues from subjective nits."""
+        task = {
+            "id": 6, "title": "Polish prompt", "description": None,
+            "branch": "feat", "status": "running", "next_step": "commit-review",
+            "review_round": 0, "last_review_decision": "none",
+            "commit_hash": None, "stash_ref": None, "coder_agent": "claude",
+        }
+        prompt = orchestrator.build_prompt(task, "commit-review", "codex", [])
+        self.assertIn("Concrete quality or polish issues", prompt)
+        self.assertIn("maintainability", prompt)
+        self.assertIn("readability", prompt)
+        self.assertIn("UX", prompt)
+        self.assertIn("docs clarity", prompt)
+        self.assertIn("public presentation", prompt)
+        self.assertIn("Purely personal preferences or subjective style nits", prompt)
+        self.assertIn("Large refactors outside the task scope", prompt)
+        self.assertNotIn("Style, formatting, hypothetical improvements", prompt)
+
     def test_build_prompt_reviewer_handoff_includes_maker_commit_message(self):
         """Reviewer prompt prominently shows maker's most recent commit-message comment."""
         task = {
@@ -2585,7 +2604,7 @@ class TestKanbanCLI(unittest.TestCase):
             ".kanban-orchestra/",
             ".claude/",
             ".gemini/",
-            ".codex/",
+            ".agents/",
         ]:
             self.assertIn(entry, gitignore)
 
@@ -2723,13 +2742,6 @@ class TestSyncAiSkillWrappers(unittest.TestCase):
                     f"---\nname: {skill_name}\ndescription: {description}\n---\n\n"
                     f"Read and follow the instructions in `{canonical_path.resolve()}`.\n"
                 ),
-                ".codex/skills/kanban/SKILL.md": (
-                    f"---\nname: {skill_name}\ndescription: {description}\n---\n\n"
-                    f"# Kanban\n\n"
-                    f"Canonical instructions: `AI-skills/{skill_name}.md`\n\n"
-                    f"Load that file and follow it exactly. If this skill conflicts with the canonical file, "
-                    f"the canonical file wins.\n"
-                ),
             }
             for relative_path, content in legacy_files.items():
                 wrapper_path = target / relative_path
@@ -2747,7 +2759,28 @@ class TestSyncAiSkillWrappers(unittest.TestCase):
                 wrapper_path = target / relative_path
                 self.assertEqual(wrapper_path.read_text(encoding="utf-8"), expected)
 
-    def test_sync_skill_wrappers_skips_custom_wrapper_files(self):
+    def test_sync_skill_wrappers_removes_generated_obsolete_codex_wrappers(self):
+        with tempfile.TemporaryDirectory() as orchestra_tmp, tempfile.TemporaryDirectory() as repo_tmp:
+            orchestra_dir = Path(orchestra_tmp)
+            target = Path(repo_tmp)
+            _write_test_ai_skills(orchestra_dir)
+
+            skill_name = "kanban"
+            canonical_path = orchestra_dir / "AI-skills" / f"{skill_name}.md"
+            description = skill_wrappers._skill_description(canonical_path)
+            stale_wrapper = target / ".codex" / "skills" / skill_name / "SKILL.md"
+            stale_wrapper.parent.mkdir(parents=True, exist_ok=True)
+            stale_wrapper.write_text(
+                skill_wrappers.render_wrapper(skill_name, description, canonical_path),
+                encoding="utf-8",
+            )
+
+            summary = skill_wrappers.sync_skill_wrappers(target=target, orchestra_dir=orchestra_dir)
+
+            self.assertIn(".codex/skills/kanban/SKILL.md", summary["removed"])
+            self.assertFalse(stale_wrapper.exists())
+
+    def test_sync_skill_wrappers_keeps_custom_obsolete_codex_wrappers(self):
         with tempfile.TemporaryDirectory() as orchestra_tmp, tempfile.TemporaryDirectory() as repo_tmp:
             orchestra_dir = Path(orchestra_tmp)
             target = Path(repo_tmp)
@@ -2760,13 +2793,35 @@ class TestSyncAiSkillWrappers(unittest.TestCase):
                 "name: kanban\n"
                 "description: Custom local instructions.\n"
                 "---\n\n"
-                "Use the local team-specific kanban workflow instead of the shared one.\n"
+                "Use these custom Codex-only instructions.\n"
             )
             custom_wrapper.write_text(custom_content, encoding="utf-8")
 
             summary = skill_wrappers.sync_skill_wrappers(target=target, orchestra_dir=orchestra_dir)
 
             self.assertIn(".codex/skills/kanban/SKILL.md", summary["skipped"])
+            self.assertEqual(custom_wrapper.read_text(encoding="utf-8"), custom_content)
+
+    def test_sync_skill_wrappers_skips_custom_wrapper_files(self):
+        with tempfile.TemporaryDirectory() as orchestra_tmp, tempfile.TemporaryDirectory() as repo_tmp:
+            orchestra_dir = Path(orchestra_tmp)
+            target = Path(repo_tmp)
+            _write_test_ai_skills(orchestra_dir)
+
+            custom_wrapper = target / ".agents" / "skills" / "kanban" / "SKILL.md"
+            custom_wrapper.parent.mkdir(parents=True, exist_ok=True)
+            custom_content = (
+                "---\n"
+                "name: kanban\n"
+                "description: Custom local instructions.\n"
+                "---\n\n"
+                "Use the local team-specific kanban workflow instead of the shared one.\n"
+            )
+            custom_wrapper.write_text(custom_content, encoding="utf-8")
+
+            summary = skill_wrappers.sync_skill_wrappers(target=target, orchestra_dir=orchestra_dir)
+
+            self.assertIn(".agents/skills/kanban/SKILL.md", summary["skipped"])
             self.assertEqual(custom_wrapper.read_text(encoding="utf-8"), custom_content)
 
     def test_sync_skill_wrappers_picks_up_new_skill_file_automatically(self):
@@ -2802,8 +2857,8 @@ class TestSyncAiSkillWrappers(unittest.TestCase):
 
             summary = skill_wrappers.sync_skill_wrappers(target=target, orchestra_dir=orchestra_dir)
 
-            self.assertIn(".codex/skills/prep-for-review/SKILL.md", summary["created"])
-            wrapper_path = target / ".codex" / "skills" / "prep-for-review" / "SKILL.md"
+            self.assertIn(".agents/skills/prep-for-review/SKILL.md", summary["created"])
+            wrapper_path = target / ".agents" / "skills" / "prep-for-review" / "SKILL.md"
             self.assertIn(
                 'description: "**Note**: This is the ad-hoc manual workflow."',
                 wrapper_path.read_text(encoding="utf-8"),
