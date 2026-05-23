@@ -102,10 +102,10 @@ accounts, or billing — install and authenticate each CLI yourself.
 5. **Start the dashboard** for the work repo:
 
    ```bash
-   "$ORCHESTRA_DIR/bin/ko-ui"
+   "$ORCHESTRA_DIR/bin/ko-dashboard"
    ```
 
-   Use the Browser button in `orchestra-ui` to open the HTML dashboard.
+   Open the local URL it prints in your browser.
 
 6. **Talk to your agent.** In the work repo, invoke the Kanban skill with a
    plain-language request:
@@ -154,10 +154,10 @@ echo $! > .kanban-orchestra/orchestrator.pid
 Use `launchd` instead when you want the orchestrator to start at login or
 restart automatically after an unexpected exit.
 
-The dashboard is optional in this setup. Start `ko-ui` only when you want the
-local visual interface; the orchestrator and SQLite database are the durable
-parts that keep work moving while Codex, the terminal, or the dashboard are not
-open.
+The dashboard is optional in this setup. Start `ko-dashboard` only when you
+want the local visual interface; the orchestrator and SQLite database are the
+durable parts that keep work moving while Codex, the terminal, or the
+dashboard are not open.
 
 ### Hardening
 
