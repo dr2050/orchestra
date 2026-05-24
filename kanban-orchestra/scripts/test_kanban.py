@@ -2500,6 +2500,30 @@ class TestWorkspaceResolution(unittest.TestCase):
             self.assertEqual(workspace["repo_root"], Path(tmpdir).resolve())
             self.assertEqual(workspace["db_path"], Path(tmpdir).resolve() / "kanban-orchestra.db")
 
+    def test_get_instance_identity_uses_launch_repo_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            subprocess.run(["git", "init", "-q"], cwd=tmpdir, check=True)
+            nested = Path(tmpdir) / "a" / "b"
+            nested.mkdir(parents=True)
+            custom_db = Path(tmpdir) / "state" / "custom.sqlite3"
+
+            identity = db.get_instance_identity(str(custom_db), cwd=str(nested))
+
+            self.assertEqual(identity["repo_root"], str(Path(tmpdir).resolve()))
+            self.assertEqual(identity["repo_label"], Path(tmpdir).name)
+            self.assertEqual(identity["db_path"], str(custom_db.resolve()))
+            self.assertEqual(identity["runtime_root"], str((custom_db.parent / ".kanban-orchestra").resolve()))
+            self.assertEqual(identity["lock_path"], str((custom_db.parent / "kanban-orchestra.lock").resolve()))
+
+    def test_get_instance_identity_falls_back_to_db_parent_outside_git(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "kanban.db"
+
+            identity = db.get_instance_identity(str(db_path), cwd=tmpdir)
+
+            self.assertEqual(identity["repo_root"], str(Path(tmpdir).resolve()))
+            self.assertEqual(identity["repo_label"], Path(tmpdir).name)
+
     def test_get_orchestra_dir_uses_env_var(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             orchestra_dir = Path(tmpdir) / "orchestra-src"
@@ -3314,12 +3338,16 @@ class TestSingletonLock(unittest.TestCase):
         contents = self.lock_path.read_text(encoding="utf-8")
         self.assertIn("pid=", contents)
         self.assertIn("started_at=", contents)
+        self.assertIn("role=orchestrator", contents)
+        self.assertIn(f"repo_root={Path(self.tmpdir.name).resolve()}", contents)
+        self.assertIn(f"lock_path={self.lock_path.resolve()}", contents)
 
     def test_second_process_cannot_acquire_while_locked(self):
         orchestrator.acquire_singleton_lock(lock_path=self.lock_path)
         probe = self._run_lock_probe()
         self.assertEqual(probe.returncode, 1)
         self.assertIn("already running", probe.stdout)
+        self.assertIn(str(Path(self.tmpdir.name).resolve()), probe.stdout)
 
     def test_release_allows_another_process_to_acquire(self):
         orchestrator.acquire_singleton_lock(lock_path=self.lock_path)
@@ -3353,6 +3381,46 @@ class TestSingletonLock(unittest.TestCase):
         mock_lock.assert_not_called()
         mock_connect.assert_not_called()
         self.assertTrue(any("dirty" in str(c).lower() for c in mock_log.call_args_list))
+
+
+class TestOrchestratorControlIdentity(unittest.TestCase):
+    """Test repo identity metadata in filesystem-backed control helpers."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = str(Path(self.tmpdir.name) / "kanban.db")
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_write_supervisor_heartbeat_includes_instance_identity(self):
+        orchestrator_control.write_supervisor_heartbeat(db_path=self.db_path)
+
+        heartbeat_path = db.get_runtime_root(self.db_path) / orchestrator_control.SUPERVISOR_HEARTBEAT_FILE
+        payload = json.loads(heartbeat_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["repo_root"], str(Path(self.tmpdir.name).resolve()))
+        self.assertEqual(payload["repo_label"], Path(self.tmpdir.name).name)
+        self.assertEqual(payload["db_path"], str(Path(self.db_path).resolve()))
+        self.assertEqual(payload["runtime_root"], str((Path(self.tmpdir.name) / ".kanban-orchestra").resolve()))
+        self.assertEqual(payload["lock_path"], str((Path(self.tmpdir.name) / "kanban-orchestra.lock").resolve()))
+
+    def test_supervisor_status_rejects_heartbeat_for_other_repo(self):
+        heartbeat_path = db.get_runtime_root(self.db_path) / orchestrator_control.SUPERVISOR_HEARTBEAT_FILE
+        heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            **db.get_instance_identity(self.db_path),
+            "repo_root": str((Path(self.tmpdir.name) / "other-repo").resolve()),
+            "pid": os.getpid(),
+            "updated_at": "2026-05-24T00:00:00+00:00",
+        }
+        heartbeat_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        live, reason, read_payload = orchestrator_control.supervisor_status(self.db_path)
+
+        self.assertFalse(live)
+        self.assertIn("different repo", reason)
+        self.assertEqual(read_payload["repo_root"], payload["repo_root"])
 
 
 class TestSupertaskDB(unittest.TestCase):

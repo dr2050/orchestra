@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 SCHEMA_VERSION = 15
+LOCK_FILE_NAME = "kanban-orchestra.lock"
 
 SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS tasks (
@@ -157,6 +158,60 @@ def get_workspace(cwd: str | None = None) -> dict[str, Path]:
     }
 
 
+def get_lock_path(db_path: str | None = None) -> Path:
+    """Return the repo-scoped singleton lock path for the current workspace."""
+    return Path(get_db_path(db_path)).resolve().with_name(LOCK_FILE_NAME)
+
+
+def get_instance_identity(
+    db_path: str | None = None,
+    *,
+    cwd: str | None = None,
+    lock_path: str | Path | None = None,
+) -> dict[str, str]:
+    """Return stable identifiers for the current Orchestra work-repo instance.
+
+    The git repo root is the human-facing instance identity. The database,
+    runtime directory, and lock path remain explicit because advanced setups may
+    override KANBAN_DB while still launching from a work repository.
+    """
+    resolved_db_path: Path | None = None
+    if not (lock_path is not None and db_path is None and not os.environ.get("KANBAN_DB")):
+        try:
+            resolved_db_path = Path(get_db_path(db_path)).resolve()
+        except RuntimeError:
+            if lock_path is None:
+                raise
+
+    has_explicit_state_path = db_path is not None or lock_path is not None or os.environ.get("KANBAN_DB")
+    repo_root = None
+    if cwd is not None or not has_explicit_state_path:
+        try:
+            repo_root = get_repo_root(cwd)
+        except RuntimeError:
+            repo_root = None
+
+    if repo_root is None:
+        if resolved_db_path is not None:
+            repo_root = resolved_db_path.parent
+        elif lock_path is not None:
+            repo_root = Path(lock_path).resolve().parent
+        else:
+            repo_root = get_repo_root(cwd)
+
+    resolved_lock_path = Path(lock_path).resolve() if lock_path is not None else get_lock_path(db_path)
+    runtime_root = get_runtime_root(db_path) if resolved_db_path is not None else repo_root / ".kanban-orchestra"
+    resolved_db_path = resolved_db_path or repo_root / "kanban-orchestra.db"
+
+    return {
+        "repo_root": str(repo_root),
+        "repo_label": repo_root.name or str(repo_root),
+        "db_path": str(resolved_db_path),
+        "runtime_root": str(runtime_root),
+        "lock_path": str(resolved_lock_path),
+    }
+
+
 def get_runtime_root(db_path: str | None = None) -> Path:
     """Return the directory used for repo-scoped runtime artifacts."""
     return Path(get_db_path(db_path)).resolve().parent / ".kanban-orchestra"
@@ -200,6 +255,17 @@ def connect(db_path: str | None = None) -> sqlite3.Connection:
     _check_schema_compatible(conn)
     conn.executescript(SCHEMA_SQL)
     return conn
+
+
+def get_connection_db_path(conn: sqlite3.Connection) -> str | None:
+    """Return the on-disk main database path for an open SQLite connection."""
+    row = conn.execute("PRAGMA database_list").fetchone()
+    if not row:
+        return None
+    try:
+        return row["file"]
+    except (KeyError, TypeError):
+        return row[2]
 
 
 def _list_user_tables(conn: sqlite3.Connection) -> list[str]:
