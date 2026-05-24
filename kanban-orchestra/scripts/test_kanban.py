@@ -336,6 +336,111 @@ class TestDB(unittest.TestCase):
                 if os.path.exists(path):
                     os.unlink(path)
 
+    def test_skip_commit_plan_column_migrates_to_task_skips(self):
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        try:
+            legacy = sqlite3.connect(tmp.name)
+            legacy.executescript(
+                """CREATE TABLE tasks (
+                    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title                   TEXT NOT NULL,
+                    description             TEXT,
+                    status                  TEXT NOT NULL DEFAULT 'none'
+                        CHECK(status IN ('none', 'ready', 'running', 'done', 'blocked',
+                                         'pending_subtasks')),
+                    next_step               TEXT NOT NULL DEFAULT 'commit-make'
+                        CHECK(next_step IN ('commit-make', 'commit-review',
+                                            'commit-make-supertask', 'commit-review-supertask',
+                                            'commit-plan', 'commit-plan-review',
+                                            'none')),
+                    branch                  TEXT,
+                    commit_hash             TEXT,
+                    stash_ref               TEXT,
+                    coder_agent             TEXT,
+                    review_round            INTEGER DEFAULT 0,
+                    last_review_decision    TEXT DEFAULT 'none'
+                        CHECK(last_review_decision IN ('none', 'approve', 'reject')),
+                    created_at              DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    ready_at                DATETIME DEFAULT NULL,
+                    updated_at              DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    kind                    TEXT NOT NULL DEFAULT 'task'
+                        CHECK(kind IN ('task', 'supertask')),
+                    parent_task_id          INTEGER REFERENCES tasks(id),
+                    sequence_index          INTEGER,
+                    skip_commit_plan        INTEGER NOT NULL DEFAULT 0
+                        CHECK(skip_commit_plan IN (0, 1)),
+                    commit_plan             TEXT
+                );
+                CREATE TABLE run_log (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id     INTEGER REFERENCES tasks(id),
+                    verb        TEXT,
+                    author      TEXT,
+                    message     TEXT,
+                    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE comments (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id        INTEGER REFERENCES tasks(id),
+                    review_round   INTEGER,
+                    verb           TEXT,
+                    author         TEXT,
+                    message        TEXT,
+                    kind           TEXT DEFAULT 'comment'
+                        CHECK(kind IN ('comment', 'approval', 'rejection', 'commit-message',
+                                       'validation', 'plan-approval', 'plan-rejection')),
+                    created_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE orchestrator_runtime (
+                    singleton            INTEGER PRIMARY KEY CHECK(singleton = 1),
+                    status               TEXT NOT NULL
+                        CHECK(status IN ('idle', 'running', 'starting', 'stopping', 'stopped',
+                                         'hard-break', 'error')),
+                    pid                  INTEGER,
+                    started_at           DATETIME,
+                    last_heartbeat_at    DATETIME,
+                    current_task_id      INTEGER REFERENCES tasks(id),
+                    current_step         TEXT
+                        CHECK(current_step IN ('commit-make', 'commit-review',
+                                               'commit-make-supertask', 'commit-review-supertask',
+                                               'commit-plan', 'commit-plan-review', 'none')),
+                    current_branch       TEXT,
+                    review_round         INTEGER,
+                    active_agents        INTEGER NOT NULL DEFAULT 0,
+                    status_message       TEXT,
+                    updated_at           DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO tasks (title, status, next_step, skip_commit_plan)
+                    VALUES ('Skip planning', 'done', 'commit-make', 1);
+                INSERT INTO tasks (title, status, next_step, skip_commit_plan)
+                    VALUES ('Keep planning', 'done', 'commit-plan', 0);
+                """
+            )
+            legacy.commit()
+            legacy.close()
+
+            conn = db.connect(tmp.name)
+            try:
+                task_cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+                self.assertNotIn("skip_commit_plan", task_cols)
+                self.assertIn("reviewer_agent", task_cols)
+                self.assertIn("follow_up_task_id", task_cols)
+                self.assertIn("allow_when_blocked", task_cols)
+
+                skipped = db.get_task(conn, 1)
+                planned = db.get_task(conn, 2)
+                self.assertEqual(skipped["skips"], ["commit-plan"])
+                self.assertEqual(planned["skips"], [])
+                self.assertEqual(skipped["title"], "Skip planning")
+            finally:
+                conn.close()
+        finally:
+            for suffix in ("", "-shm", "-wal"):
+                path = tmp.name + suffix
+                if os.path.exists(path):
+                    os.unlink(path)
+
 
     def test_legacy_db_with_koid_raises_error(self):
         """connect() must raise RuntimeError on a legacy schema that still has koid."""

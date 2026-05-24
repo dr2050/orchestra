@@ -362,6 +362,94 @@ def _migrate_orchestrator_runtime(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migrate_skip_commit_plan_tasks(conn: sqlite3.Connection, task_cols: set[str]) -> None:
+    """Migrate the old tasks.skip_commit_plan flag into task_skips rows."""
+    value_expr = {
+        "id": "id",
+        "title": "title",
+        "description": "description" if "description" in task_cols else "NULL",
+        "status": "status" if "status" in task_cols else "'none'",
+        "next_step": "next_step" if "next_step" in task_cols else "'commit-make'",
+        "branch": "branch" if "branch" in task_cols else "NULL",
+        "commit_hash": "commit_hash" if "commit_hash" in task_cols else "NULL",
+        "stash_ref": "stash_ref" if "stash_ref" in task_cols else "NULL",
+        "coder_agent": "coder_agent" if "coder_agent" in task_cols else "NULL",
+        "reviewer_agent": "reviewer_agent" if "reviewer_agent" in task_cols else "NULL",
+        "review_round": "review_round" if "review_round" in task_cols else "0",
+        "last_review_decision": "last_review_decision" if "last_review_decision" in task_cols else "'none'",
+        "created_at": "created_at" if "created_at" in task_cols else "CURRENT_TIMESTAMP",
+        "ready_at": "ready_at" if "ready_at" in task_cols else "NULL",
+        "updated_at": "updated_at" if "updated_at" in task_cols else "CURRENT_TIMESTAMP",
+        "kind": "kind" if "kind" in task_cols else "'task'",
+        "parent_task_id": "parent_task_id" if "parent_task_id" in task_cols else "NULL",
+        "sequence_index": "sequence_index" if "sequence_index" in task_cols else "NULL",
+        "commit_plan": "commit_plan" if "commit_plan" in task_cols else "NULL",
+        "follow_up_task_id": "follow_up_task_id" if "follow_up_task_id" in task_cols else "NULL",
+        "allow_when_blocked": "allow_when_blocked" if "allow_when_blocked" in task_cols else "0",
+    }
+    columns = list(value_expr)
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.executescript(f"""
+            BEGIN;
+            CREATE TEMP TABLE skip_commit_plan_tasks AS
+                SELECT id FROM tasks WHERE skip_commit_plan = 1;
+            CREATE TABLE tasks_migrated (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                title                   TEXT NOT NULL,
+                description             TEXT,
+                status                  TEXT NOT NULL DEFAULT 'none'
+                    CHECK(status IN ('none', 'ready', 'running', 'done', 'blocked', 'pending_subtasks')),
+                next_step               TEXT NOT NULL DEFAULT 'commit-make'
+                    CHECK(next_step IN ('commit-make', 'commit-review',
+                                        'commit-make-supertask', 'commit-review-supertask',
+                                        'commit-plan', 'commit-plan-review',
+                                        'none')),
+                branch                  TEXT,
+                commit_hash             TEXT,
+                stash_ref               TEXT,
+                coder_agent             TEXT,
+                reviewer_agent          TEXT,
+                review_round            INTEGER DEFAULT 0,
+                last_review_decision    TEXT DEFAULT 'none'
+                    CHECK(last_review_decision IN ('none', 'approve', 'reject')),
+                created_at              DATETIME DEFAULT CURRENT_TIMESTAMP,
+                ready_at                DATETIME DEFAULT NULL,
+                updated_at              DATETIME DEFAULT CURRENT_TIMESTAMP,
+                kind                    TEXT NOT NULL DEFAULT 'task'
+                    CHECK(kind IN ('task', 'supertask')),
+                parent_task_id          INTEGER REFERENCES tasks(id),
+                sequence_index          INTEGER,
+                commit_plan             TEXT,
+                follow_up_task_id       INTEGER REFERENCES tasks(id),
+                allow_when_blocked      INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO tasks_migrated ({", ".join(columns)})
+                SELECT {", ".join(value_expr[column] for column in columns)}
+                FROM tasks;
+            DROP TABLE tasks;
+            ALTER TABLE tasks_migrated RENAME TO tasks;
+            CREATE TABLE IF NOT EXISTS task_skips (
+                task_id  INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                step     TEXT    NOT NULL
+                                 CHECK(step IN ('commit-plan','commit-plan-review',
+                                                'commit-review','commit-review-supertask')),
+                PRIMARY KEY (task_id, step)
+            );
+            INSERT OR IGNORE INTO task_skips (task_id, step)
+                SELECT id, 'commit-plan' FROM skip_commit_plan_tasks;
+            DROP TABLE skip_commit_plan_tasks;
+            COMMIT;
+        """)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+    conn.commit()
+
+
 def restore_dump(
     db_path: str | None = None,
     sql_path: str | None = None,
@@ -418,10 +506,16 @@ def _check_schema_compatible(conn: sqlite3.Connection) -> None:
     if not task_cols:
         return  # Fresh DB — no tables yet
 
-    # Columns that were removed in past schema versions
+    if "skip_commit_plan" in task_cols:
+        _migrate_skip_commit_plan_tasks(conn, task_cols)
+        task_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+
+    # Columns that were removed in past schema versions and cannot be migrated.
     removed_cols = {
         "koid", "commit_hashes", "skip_same_branch_koid_check", "failed_coders",
-        "skip_commit_plan"
     }
     present_legacy = removed_cols & task_cols
     if present_legacy:
