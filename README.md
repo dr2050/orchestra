@@ -86,6 +86,12 @@ accounts, or billing — install and authenticate each CLI yourself.
    export ORCHESTRA_DIR="/path/to/orchestra"
    ```
 
+   zsh users can also load the optional command helpers:
+
+   ```zsh
+   source "$ORCHESTRA_DIR/shell/orchestra.zsh"
+   ```
+
 3. **Bootstrap the Python environment:**
 
    ```bash
@@ -106,6 +112,21 @@ accounts, or billing — install and authenticate each CLI yourself.
    ```
 
    Open the local URL it prints in your browser.
+
+   If you loaded the zsh helpers, run these commands from the root of the work
+   repo:
+
+   ```zsh
+   orchestra          # open the process manager TUI
+   orchestra-dashboard
+   orchestra-status
+   orchestra-start
+   orchestra-stop
+   orchestra-break
+   ```
+
+   Short aliases are also provided for frequent use: `odash`, `ostatus`,
+   `ostart`, `ostop`, and `obreak`.
 
 6. **Talk to your agent.** In the work repo, invoke the Kanban skill with a
    plain-language request:
