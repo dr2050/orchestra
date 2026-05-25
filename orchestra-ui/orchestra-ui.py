@@ -32,6 +32,7 @@ SCRIPTS_DIR = os.path.join(ORCHESTRA_DIR, "kanban-orchestra", "scripts")
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 import db as kanban_db  # noqa: E402
+import active_agent_processes  # noqa: E402
 import orchestrator_control  # noqa: E402
 
 PROCESS_DEFS = [
@@ -891,7 +892,7 @@ class OrchestraApp(App):
         was_running = proc.status == "running"
         if was_running:
             proc.kill()
-        killed_agents = orchestrator_control.kill_active_agents()
+        killed_agents = active_agent_processes.kill_active_agents()
 
         conn = kanban_db.connect()
         try:
@@ -948,7 +949,7 @@ class OrchestraApp(App):
             was_running = proc.status == "running"
             if was_running:
                 proc.kill()
-            killed_agents = orchestrator_control.kill_active_agents()
+            killed_agents = active_agent_processes.kill_active_agents()
             removed_stop_marker = orchestrator_control.remove_stop_after_task_marker()
 
             blocked_task_id = None

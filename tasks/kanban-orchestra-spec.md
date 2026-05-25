@@ -256,7 +256,9 @@ Runtime status values:
   compatibility control request consumed by `orchestra-ui`
 - `.kanban-orchestra/orchestrator-control-response.json`: deprecated
   compatibility control response for the requester
-- `.kanban-orchestra/active-agent-processes.json`: transient process-group metadata for active agent children
+- `.kanban-orchestra/active-agent-processes.json`: transient process-group
+  metadata for active agent children, maintained by the active-agent runtime
+  helpers rather than by the deprecated `orchestra-ui` supervisor controls
 
 ## Task States
 
@@ -706,9 +708,10 @@ names are derived from the basename of the resolved repo path.
 - stops fleet-owned terminal sessions for selected repos
 - leaves externally managed instances alone and reports them
 
-`orchestra-ui` and its JSON control files are deprecated compatibility
-surfaces. New workflows should use `ko-orchestrator`, `ko-fleet`, `ko-task`,
-and `ko-get-update`.
+`orchestra-ui` and its heartbeat/request/response JSON control files are
+deprecated compatibility surfaces. Operator workflows should use
+`ko-orchestrator`, `ko-fleet`, `ko-task`, and `ko-get-update`; active child
+process metadata is maintained independently of those deprecated control files.
 
 ### Pinned Task Execution
 

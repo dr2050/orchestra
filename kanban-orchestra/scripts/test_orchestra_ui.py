@@ -378,7 +378,7 @@ class TestOrchestratorControl(unittest.TestCase):
         )
         app = self._app("running")
 
-        with patch.object(orchestra_ui.orchestrator_control, "kill_active_agents", return_value=[{"pid": 444}]):
+        with patch.object(orchestra_ui.active_agent_processes, "kill_active_agents", return_value=[{"pid": 444}]):
             response = app._execute_control_command("stop")
 
         self.assertTrue(response["ok"])
@@ -419,7 +419,7 @@ class TestOrchestratorControl(unittest.TestCase):
         stop_marker.write_text("", encoding="utf-8")
         app = self._app("running")
 
-        with patch.object(orchestra_ui.orchestrator_control, "kill_active_agents", return_value=[{"pid": 444}]):
+        with patch.object(orchestra_ui.active_agent_processes, "kill_active_agents", return_value=[{"pid": 444}]):
             response = app._execute_control_command("break")
 
         self.assertTrue(response["ok"])
