@@ -131,11 +131,18 @@ accounts, or billing — install and authenticate each CLI yourself.
    ```bash
    "$ORCHESTRA_DIR/bin/ko-fleet" init
    "$ORCHESTRA_DIR/bin/ko-fleet" add .
+   "$ORCHESTRA_DIR/bin/ko-fleet" status
    "$ORCHESTRA_DIR/bin/ko-fleet" start
    ```
 
    The fleet config is `~/.config/orchestra/fleet.repos`: one git repo root per
    line, with blank lines and `#` comments allowed.
+   `ko-fleet stop`, `restart`, `attach`, `logs`, and `dashboard` operate on the
+   selected repo label or path. `ko-fleet dashboard-open` is an explicit alias
+   for opening the repo dashboard. The removed Textual `BREAK` control has no
+   remote replacement; stop or interrupt the repo instance, inspect with
+   `ko-get-update`, update the affected task with `ko-task`, and restart
+   explicitly.
 
 6. **Talk to your agent.** In the work repo, invoke the Kanban skill with a
    plain-language request:

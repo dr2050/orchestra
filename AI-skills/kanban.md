@@ -171,6 +171,10 @@ Use status commands and repo-local metadata instead of PID hunting:
 "$ORCHESTRA_DIR/bin/ko-fleet" precheck
 "$ORCHESTRA_DIR/bin/ko-fleet" start
 "$ORCHESTRA_DIR/bin/ko-fleet" stop <repo-label>
+"$ORCHESTRA_DIR/bin/ko-fleet" restart <repo-label>
+"$ORCHESTRA_DIR/bin/ko-fleet" attach <repo-label>
+"$ORCHESTRA_DIR/bin/ko-fleet" logs <repo-label>
+"$ORCHESTRA_DIR/bin/ko-fleet" dashboard <repo-label>
 ```
 
 Fleet config lives at `~/.config/orchestra/fleet.repos` by default. It is a
@@ -191,8 +195,13 @@ detection, deletes the file, and exits.
 
 Notes:
 - Use `ko-fleet dashboard <repo-label>` to open a running instance dashboard.
+- Use `ko-fleet dashboard-open <repo-label>` when a script wants an explicit
+  open verb; it is an alias for `dashboard`.
 - The dashboard chooses a free port at runtime and records it in
   `.kanban-orchestra/dashboard.json`.
+- The old Textual `BREAK` control is intentionally not replaced as a remote
+  command. Stop or interrupt the repo instance, inspect with `ko-get-update`,
+  use `ko-task` to record or unblock the affected task, and restart explicitly.
 
 ## Default operating pattern
 

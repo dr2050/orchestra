@@ -83,7 +83,7 @@ orchestra-start() {
 }
 
 orchestra-stop() {
-  print -u2 "orchestra-stop is deprecated; stop the foreground orchestrator with Ctrl-C, touch kanban-orchestra.ko-stop-after-task in the repo, or use 'orchestra-fleet stop <repo>'."
+  print -u2 "orchestra-stop is deprecated; stop the foreground orchestrator with Ctrl-C, touch KANBAN_ORCHESTRATOR_STOP_AFTER_TASK in the repo, or use 'orchestra-fleet stop <repo>'."
   return 2
 }
 

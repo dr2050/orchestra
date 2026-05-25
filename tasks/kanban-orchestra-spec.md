@@ -694,8 +694,13 @@ names are derived from the basename of the resolved repo path.
 "$ORCHESTRA_DIR/bin/ko-fleet" init
 "$ORCHESTRA_DIR/bin/ko-fleet" add /path/to/work-repo
 "$ORCHESTRA_DIR/bin/ko-fleet" precheck
+"$ORCHESTRA_DIR/bin/ko-fleet" status
 "$ORCHESTRA_DIR/bin/ko-fleet" start
 "$ORCHESTRA_DIR/bin/ko-fleet" stop <repo-label>
+"$ORCHESTRA_DIR/bin/ko-fleet" restart <repo-label>
+"$ORCHESTRA_DIR/bin/ko-fleet" attach <repo-label>
+"$ORCHESTRA_DIR/bin/ko-fleet" logs <repo-label>
+"$ORCHESTRA_DIR/bin/ko-fleet" dashboard <repo-label>
 ```
 
 `ko-fleet start`:
@@ -708,10 +713,22 @@ names are derived from the basename of the resolved repo path.
 - stops fleet-owned terminal sessions for selected repos
 - leaves externally managed instances alone and reports them
 
+`ko-fleet restart` stops the selected fleet-owned instances, waits for the
+repo-scoped orchestrator lock metadata to clear, and starts them again.
+`ko-fleet attach`, `ko-fleet logs`, and `ko-fleet dashboard` select by repo
+label/path and then use the selected repo's tmux session, repo-local
+`.kanban-orchestra/orchestrator.log`, and repo-local dashboard metadata.
+`ko-fleet dashboard-open` is an alias for `ko-fleet dashboard`.
+
 `orchestra-ui` and its heartbeat/request/response JSON control files are
 deprecated compatibility surfaces. Operator workflows should use
 `ko-orchestrator`, `ko-fleet`, `ko-task`, and `ko-get-update`; active child
 process metadata is maintained independently of those deprecated control files.
+The old `BREAK` control is intentionally removed as a remote operator command:
+it killed in-flight agent process groups and rewrote runtime state outside the
+orchestrator's normal task loop. The supported migration is to stop or interrupt
+the repo instance, inspect status with `ko-get-update`, record or unblock the
+affected task with `ko-task`, and then restart the repo instance explicitly.
 
 ### Pinned Task Execution
 
