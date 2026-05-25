@@ -32,6 +32,21 @@ def _task_reviewer(task) -> str:
     return task.get("reviewer_agent") or config.DEFAULT_REVIEWER
 
 
+def _done_reviewer_and_rejections(conn, task) -> tuple[str, int]:
+    reviewer_rows = conn.execute(
+        "SELECT DISTINCT author FROM comments "
+        "WHERE task_id = ? AND kind = 'approval' AND author IS NOT NULL ORDER BY id",
+        (task["id"],),
+    ).fetchall()
+    approvers = ", ".join(row["author"] for row in reviewer_rows)
+    rejection_row = conn.execute(
+        "SELECT COUNT(*) AS count FROM comments WHERE task_id = ? AND kind = 'rejection'",
+        (task["id"],),
+    ).fetchone()
+    rejection_count = int(rejection_row["count"] if rejection_row else 0)
+    return approvers or (task["reviewer_agent"] or config.DEFAULT_REVIEWER), rejection_count
+
+
 def _age(dt_str: str | None) -> str:
     if not dt_str:
         return "unknown"
@@ -252,15 +267,9 @@ def build_update(conn) -> str:
             h = (r["commit_hash"] or "")[:8]
             commit_part = f"  commit: {h}" if h else ""
             coder_part = f"  coder: {r['coder_agent']}" if r["coder_agent"] else ""
-            configured_reviewer_part = f"  configured reviewer: {r['reviewer_agent'] or config.DEFAULT_REVIEWER}"
-            reviewer_rows = conn.execute(
-                "SELECT DISTINCT author FROM comments "
-                "WHERE task_id = ? AND kind = 'approval' AND author IS NOT NULL ORDER BY id",
-                (r["id"],),
-            ).fetchall()
-            reviewers = ", ".join(row["author"] for row in reviewer_rows)
-            reviewer_part = f"  approver: {reviewers}" if reviewers else ""
-            lines.append(f"  #{r['id']} {r['title']}{commit_part}{coder_part}{configured_reviewer_part}{reviewer_part}")
+            reviewer, rejection_count = _done_reviewer_and_rejections(conn, r)
+            reviewer_part = f"  reviewer: {reviewer}" if reviewer else ""
+            lines.append(f"  #{r['id']} {r['title']}{commit_part}{coder_part}{reviewer_part}  rejections: {rejection_count}")
     else:
         lines.append("RECENTLY DONE: none")
 

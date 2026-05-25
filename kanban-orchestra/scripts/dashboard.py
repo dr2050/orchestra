@@ -228,7 +228,7 @@ def _format_skips(skips: list[str] | None) -> str:
     return ", ".join(skips)
 
 
-def _get_task_reviewers(conn, task_id: int) -> list[str]:
+def _get_task_approvers(conn, task_id: int) -> list[str]:
     """Return distinct reviewer names from approval comments for a task."""
     rows = conn.execute(
         "SELECT DISTINCT author FROM comments "
@@ -239,11 +239,30 @@ def _get_task_reviewers(conn, task_id: int) -> list[str]:
     return [r["author"] for r in rows]
 
 
+def _get_task_rejection_count(conn, task_id: int) -> int:
+    """Return the number of code review rejections recorded for a task."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS count FROM comments WHERE task_id = ? AND kind = 'rejection'",
+        (task_id,),
+    ).fetchone()
+    return int(row["count"] if row else 0)
+
+
 def _task_reviewer(task: dict | None) -> str:
     """Return the configured code-reviewer agent for display."""
     if not task:
         return ""
     return task.get("reviewer_agent") or config.DEFAULT_REVIEWER
+
+
+def _task_done_reviewer(task: dict | None) -> str:
+    """Return the final reviewer label for a completed task."""
+    if not task:
+        return ""
+    approvers = task.get("approvers") or []
+    if approvers:
+        return ", ".join(approvers)
+    return _task_reviewer(task)
 
 
 def _open_conn() -> sqlite3.Connection | None:
@@ -808,7 +827,8 @@ def render_recently_done(conn) -> str:
         "WHERE status = 'done' ORDER BY updated_at DESC, id DESC"
     ).fetchall()]
     for row in rows_raw:
-        row["reviewers"] = _get_task_reviewers(conn, row["id"])
+        row["approvers"] = _get_task_approvers(conn, row["id"])
+        row["rejection_count"] = _get_task_rejection_count(conn, row["id"])
     if not rows_raw:
         return '<div class="card" id="recently-done"><h2>Recently Done</h2><p class="muted">No completed tasks yet.</p></div>'
 
@@ -821,8 +841,8 @@ def render_recently_done(conn) -> str:
           <td><code>{_esc(r['branch'] or '')}</code></td>
           <td>{f'<code>{_esc(_short_hash(r["commit_hash"]))}</code>' if r['commit_hash'] else '-'}</td>
           <td>{_esc(r.get('coder_agent') or '') or '<span class="muted">-</span>'}</td>
-          <td>{_esc(_task_reviewer(r))}</td>
-          <td>{_esc(", ".join(r.get('reviewers') or [])) or '<span class="muted">-</span>'}</td>
+          <td>{_esc(_task_done_reviewer(r))}</td>
+          <td>{_esc(r.get('rejection_count', 0))}</td>
         </tr>"""
         for idx, r in enumerate(rows_raw)
     )
@@ -842,7 +862,7 @@ def render_recently_done(conn) -> str:
     <div class="card" id="recently-done" data-show-more-root data-initial-visible="{initial_visible}" data-visible-count="{initial_visible}" data-increment="{increment}" data-total-rows="{total_rows}">
       <h2>Recently Done</h2>
       <table>
-        <thead><tr><th class='col-id'>ID</th><th>Title</th><th class='col-branch'>Branch</th><th class='col-commit'>Commit</th><th class='col-agent'>Coder</th><th class='col-agent'>Configured Reviewer</th><th class='col-agent'>Approver</th></tr></thead>
+        <thead><tr><th class='col-id'>ID</th><th>Title</th><th class='col-branch'>Branch</th><th class='col-commit'>Commit</th><th class='col-agent'>Coder</th><th class='col-agent'>Reviewer</th><th class='col-count'>Rejections</th></tr></thead>
         <tbody>{rows}</tbody>
       </table>
       {controls_html}
@@ -1094,7 +1114,7 @@ body {
 }
 
 main {
-  max-width: 900px;
+  width: min(100%, 1180px);
   margin: 0 auto;
   padding: 24px 20px 64px;
 }
@@ -1136,6 +1156,7 @@ p  { margin: 4px 0 8px; }
   border-radius: 2px;
   padding: 18px 20px;
   margin-bottom: 16px;
+  overflow-x: auto;
 }
 
 a { color: var(--accent); }
@@ -1366,11 +1387,26 @@ th { color: var(--muted); font-weight: normal; text-transform: uppercase; font-s
 .col-step   { width: 126px; }
 .col-age    { width: 72px; }
 .col-skips  { width: 72px; }
-.col-count  { width: 52px; }
+.col-count  { width: 82px; }
 .col-state  { width: 114px; }
 
 .muted { color: var(--muted); font-size: 0.88em; }
 .task-ref  { font-family: monospace; font-size: 0.82em; }
+
+@media (max-width: 720px) {
+  main {
+    padding: 18px 12px 48px;
+  }
+
+  nav {
+    padding: 8px 12px;
+    flex-wrap: wrap;
+  }
+
+  .card {
+    padding: 14px 12px;
+  }
+}
 
 /* Status badges */
 .badge {

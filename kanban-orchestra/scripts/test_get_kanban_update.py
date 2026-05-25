@@ -64,6 +64,8 @@ class TestBuildUpdate(unittest.TestCase):
         db.update_task(self.conn, done_id, status="done", commit_hash="33333333aaaaaaaa",
                        coder_agent="claude")
         db.add_comment(self.conn, done_id, "LGTM", kind="approval", author="gemini", review_round=0)
+        db.add_comment(self.conn, done_id, "Needs work", kind="rejection", author="opus", review_round=0)
+        db.add_comment(self.conn, done_id, "Still needs work", kind="rejection", author="opus", review_round=1)
         db.add_comment(self.conn, blocked_id, "Needs human input")
         db.upsert_runtime(
             self.conn,
@@ -80,7 +82,9 @@ class TestBuildUpdate(unittest.TestCase):
         self.assertIn("branch: feat-active  coder: claude  reviewer: gemini", update)
         self.assertIn("#2 [commit-make] Ready task  branch: feat-ready  coder: sonnet  reviewer: opus  skips: commit-plan", update)
         self.assertIn("#3 Blocked task  coder: haiku  reviewer: codex  — Needs human input  skips: commit-review", update)
-        self.assertIn("#4 Done task  commit: 33333333  coder: claude  configured reviewer: opus  approver: gemini", update)
+        self.assertIn("#4 Done task  commit: 33333333  coder: claude  reviewer: gemini  rejections: 2", update)
+        self.assertNotIn("configured reviewer:", update)
+        self.assertNotIn("approver:", update)
 
     def test_operator_control_statuses_render_distinctly(self):
         old_ts = (datetime.now(timezone.utc) - timedelta(seconds=120)).strftime("%Y-%m-%d %H:%M:%S")
