@@ -20,8 +20,8 @@ define the shell function once in your shell:
 
 A standard task moves through these steps:
 
-1. `commit-plan` — coder drafts an implementation plan. *Skippable.*
-2. `commit-plan-review` — reviewer approves or rejects the plan. *Skippable.*
+1. `commit-plan` — coder drafts an implementation plan. *Skippable; skipping it also bypasses plan review.*
+2. `commit-plan-review` — reviewer approves or rejects the plan. *Skippable when a plan exists.*
 3. `commit-make` (Path A) — sticky coder builds (or reworks) the commit and stages everything.
 4. `commit-review` — reviewer inspects `git diff --cached`. *Skippable.*
 5. `commit-make` (Path B) — same coder finalizes the commit after approval.

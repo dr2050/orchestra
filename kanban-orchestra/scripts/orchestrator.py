@@ -1660,6 +1660,10 @@ def advance(task, conn):
         return True
 
     elif step == "commit-plan":
+        if db.should_skip_step(conn, task_id, "commit-plan"):
+            _approve_plan(task, conn)
+            return True
+
         success = handle_commit_plan(task, conn)
         if not success:
             mark_blocked(
@@ -1682,6 +1686,9 @@ def advance(task, conn):
         return True
 
     elif step == "commit-plan-review":
+        if db.should_skip_step(conn, task_id, "commit-plan-review"):
+            _approve_plan(task, conn)
+            return True
 
         outcome = handle_commit_plan_review(task, conn)
 

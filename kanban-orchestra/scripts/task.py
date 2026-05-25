@@ -145,12 +145,11 @@ def cmd_add(args, conn):
     branch = args.branch
     skips = list(args.skip or [])
 
-    # Normal tasks skip planning by default; union with any user-supplied skips
-    # so e.g. `--skip commit-review` keeps the default plan skips.
+    # Normal tasks skip planning by default; plan review is inferred from that
+    # skip so users and defaults only need to store the root planning skip.
     if kind == "task":
-        for default_skip in ("commit-plan-review", "commit-plan"):
-            if default_skip not in skips:
-                skips.insert(0, default_skip)
+        if "commit-plan" not in skips:
+            skips.insert(0, "commit-plan")
 
     # Validate skips
     for s in skips:
@@ -465,7 +464,7 @@ def cmd_follow_up(args, conn):
         branch=task["branch"],
         coder_agent=task["coder_agent"],
         reviewer_agent=task.get("reviewer_agent") or config.DEFAULT_REVIEWER,
-        skips=["commit-plan", "commit-plan-review"],
+        skips=["commit-plan"],
     )
 
     db.update_task(conn, args.task_id, follow_up_task_id=follow_up_id)

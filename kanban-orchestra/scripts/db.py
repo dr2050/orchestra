@@ -717,10 +717,22 @@ def add_task(
 
 
 def should_skip_step(conn, task_id, step):
-    return conn.execute(
+    if conn.execute(
         "SELECT 1 FROM task_skips WHERE task_id = ? AND step = ?",
         (task_id, step)
-    ).fetchone() is not None
+    ).fetchone() is not None:
+        return True
+
+    if step == "commit-plan-review":
+        task = conn.execute(
+            "SELECT commit_plan FROM tasks WHERE id = ?",
+            (task_id,)
+        ).fetchone()
+        if task is None:
+            return False
+        return should_skip_step(conn, task_id, "commit-plan") or not task["commit_plan"]
+
+    return False
 
 
 def add_task_skip(conn, task_id, step):
