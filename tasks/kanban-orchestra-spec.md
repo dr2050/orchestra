@@ -250,15 +250,9 @@ Runtime status values:
 - `.kanban-orchestra/dashboard.json`: repo-scoped metadata for the dashboard
   owned by the orchestrator instance, including PID, host, port, and URL.
 - `.kanban-orchestra/artifacts/`: filesystem-backed run artifacts such as transcripts
-- `.kanban-orchestra/orchestra-ui-supervisor.json`: deprecated compatibility
-  heartbeat for the old Textual process manager
-- `.kanban-orchestra/orchestrator-control-request.json`: deprecated
-  compatibility control request consumed by `orchestra-ui`
-- `.kanban-orchestra/orchestrator-control-response.json`: deprecated
-  compatibility control response for the requester
 - `.kanban-orchestra/active-agent-processes.json`: transient process-group
   metadata for active agent children, maintained by the active-agent runtime
-  helpers rather than by the deprecated `orchestra-ui` supervisor controls
+  helpers
 
 ## Task States
 
@@ -720,12 +714,14 @@ label/path and then use the selected repo's tmux session, repo-local
 `.kanban-orchestra/orchestrator.log`, and repo-local dashboard metadata.
 `ko-fleet dashboard-open` is an alias for `ko-fleet dashboard`.
 
-`orchestra-ui` and its heartbeat/request/response JSON control files are
-deprecated compatibility surfaces. Operator workflows should use
-`ko-orchestrator`, `ko-fleet`, `ko-task`, and `ko-get-update`; active child
-process metadata is maintained independently of those deprecated control files.
-The old `BREAK` control is intentionally removed as a remote operator command:
-it killed in-flight agent process groups and rewrote runtime state outside the
+The repo dashboard is the supported UI surface: it is read-only, repo-scoped,
+and attached to the matching orchestrator instance. The old process-manager UI
+and its heartbeat/request/response JSON files are removed, not compatibility
+surfaces. Operator workflows should use `ko-orchestrator`, `ko-fleet`,
+`ko-task`, and `ko-get-update`; active child process metadata is maintained
+independently in `.kanban-orchestra/active-agent-processes.json`. The old
+`BREAK` control is intentionally removed as a remote operator command: it killed
+in-flight agent process groups and rewrote runtime state outside the
 orchestrator's normal task loop. The supported migration is to stop or interrupt
 the repo instance, inspect status with `ko-get-update`, record or unblock the
 affected task with `ko-task`, and then restart the repo instance explicitly.
@@ -804,6 +800,8 @@ On unrecoverable internal exceptions:
 ## Runtime and Dashboard Contract
 
 The dashboard is read-only. It exists to answer operational questions quickly.
+It is the per-repo dashboard started by the orchestrator, not the removed
+process-manager UI.
 
 Primary questions:
 

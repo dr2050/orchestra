@@ -88,7 +88,7 @@ orchestra-stop() {
 }
 
 orchestra-break() {
-  print -u2 "orchestra-break is deprecated with the process-manager UI; inspect the blocked task and use ko-task directly."
+  print -u2 "orchestra-break was removed with the process-manager UI; inspect the blocked task and use ko-task directly."
   return 2
 }
 

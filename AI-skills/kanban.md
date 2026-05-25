@@ -199,9 +199,10 @@ Notes:
   open verb; it is an alias for `dashboard`.
 - The dashboard chooses a free port at runtime and records it in
   `.kanban-orchestra/dashboard.json`.
-- The old Textual `BREAK` control is intentionally not replaced as a remote
-  command. Stop or interrupt the repo instance, inspect with `ko-get-update`,
-  use `ko-task` to record or unblock the affected task, and restart explicitly.
+- The dashboard is the repo-scoped read-only status surface. The old
+  process-manager UI and its `BREAK` command have been removed; stop or
+  interrupt the repo instance, inspect with `ko-get-update`, use `ko-task` to
+  record or unblock the affected task, and restart explicitly.
 
 ## Default operating pattern
 
@@ -265,8 +266,8 @@ Read the result like this:
   waiting for an agent ping acknowledgment and retries every 60 seconds.
 - An old `last_heartbeat_at` means stale or dead.
 - `status = stopped` means the supervised orchestrator was stopped or paused.
-- `status = hard-break` means BREAK cleared stale active runtime fields; check
-  the blocked task comment and worktree before restarting.
+- `status = hard-break` means an emergency interruption state was recorded;
+  check the blocked task comment and worktree before restarting.
 - `status = error` means an orchestrator-level failure.
 - List blocked tasks with `task list --status blocked`.
 
