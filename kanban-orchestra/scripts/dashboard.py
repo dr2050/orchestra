@@ -196,6 +196,8 @@ def _kind_glyph(task: dict) -> str:
     """Return a tight unicode glyph indicating supertask (⊕) or subtask (↳), else ''."""
     if task.get("kind") == "supertask":
         return "⊕"
+    if task.get("kind") == "pull_request":
+        return "PR"
     if task.get("parent_task_id") is not None:
         return "↳"
     return ""
@@ -212,6 +214,8 @@ def _task_ref(task: dict) -> str:
 def _task_kind_label(task: dict) -> str:
     if task.get("kind") == "supertask":
         return "supertask"
+    if task.get("kind") == "pull_request":
+        return "pull request"
     if task.get("parent_task_id") is not None:
         return "child task"
     return "task"
@@ -517,7 +521,7 @@ def render_health_card(runtime: dict | None) -> str:
             lines.append(f'  <p><strong>Branch:</strong> <code>{_esc(branch)}</code></p>')
         if rround is not None:
             lines.append(f'  <p><strong>Review round:</strong> {_esc(rround + 1)}</p>')
-        if step in ("commit-review", "commit-review-supertask", "commit-plan-review"):
+        if step in ("commit-review", "commit-review-supertask", "commit-plan-review", "pull-request-review"):
             lines.append('  <p><strong>Review status:</strong> in progress</p>')
 
     lines.append("</div>")
@@ -952,7 +956,7 @@ def render_task_runtime_panel(task: dict, runtime: dict | None) -> str:
     badge_cls = STATUS_BADGE_CLASS.get(health, "badge-running")
 
     review_html = ""
-    if step in ("commit-review", "commit-review-supertask", "commit-plan-review"):
+    if step in ("commit-review", "commit-review-supertask", "commit-plan-review", "pull-request-review"):
         review_html = '<p><strong>Review status:</strong> in progress</p>'
 
     return f"""

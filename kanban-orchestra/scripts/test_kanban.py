@@ -110,6 +110,19 @@ class TestDB(unittest.TestCase):
         task = db.get_task(self.conn, tid)
         self.assertEqual(task["reviewer_agent"], DEFAULT_REVIEWER)
 
+    def test_add_pull_request_task_starts_at_pull_request_make(self):
+        tid = db.add_task(
+            self.conn,
+            "Open PR",
+            kind="pull_request",
+            branch="feature-branch",
+            reviewer_agent="gemini",
+        )
+        task = db.get_task(self.conn, tid)
+        self.assertEqual(task["kind"], "pull_request")
+        self.assertEqual(task["next_step"], "pull-request-make")
+        self.assertEqual(task["reviewer_agent"], "gemini")
+
     def test_list_tasks(self):
         db.add_task(self.conn, "Task 1")
         db.add_task(self.conn, "Task 2")
@@ -1161,6 +1174,48 @@ class TestPromptAssembly(unittest.TestCase):
         self.assertNotIn("Maker's validation summary", make_prompt)
         self.assertNotIn("Reviewer Handoff", make_prompt)
 
+    def test_pull_request_make_prompt_records_pr_metadata_not_commit_message(self):
+        task = {
+            "id": 30, "title": "Prepare PR", "description": None,
+            "branch": "feat-pr", "status": "running", "next_step": "pull-request-make",
+            "review_round": 0, "last_review_decision": "none",
+            "coder_agent": "claude", "reviewer_agent": "codex",
+        }
+
+        prompt = orchestrator.build_prompt(task, "pull-request-make", "claude", [])
+
+        self.assertIn("Create or update the GitHub", prompt)
+        self.assertIn("PR URL: https://github.com/<owner>/<repo>/pull/<number>", prompt)
+        self.assertIn("Title: <PR title>", prompt)
+        self.assertIn("Body:", prompt)
+        self.assertIn("task comment 30 --message-stdin --comment", prompt)
+        self.assertNotIn("--commit-message", prompt)
+        self.assertNotIn("get-commit-footer", prompt)
+
+    def test_pull_request_review_prompt_limits_scope_to_metadata(self):
+        task = {
+            "id": 31, "title": "Review PR", "description": None,
+            "branch": "feat-pr", "status": "running", "next_step": "pull-request-review",
+            "review_round": 0, "last_review_decision": "none",
+            "coder_agent": "claude", "reviewer_agent": "codex",
+        }
+        comments = [{
+            "id": 1,
+            "kind": "comment",
+            "review_round": 0,
+            "author": "claude",
+            "message": "PR URL: https://github.com/acme/project/pull/12\nTitle: Add feature\nBody:\nSummary",
+        }]
+
+        prompt = orchestrator.build_prompt(task, "pull-request-review", "codex", comments)
+
+        self.assertIn("Pull Request Reviewer Handoff", prompt)
+        self.assertIn("https://github.com/acme/project/pull/12", prompt)
+        self.assertIn("title/body quality", prompt)
+        self.assertIn("branch-summary accuracy", prompt)
+        self.assertIn("Do not perform implementation code review", prompt)
+        self.assertIn("--approval --author codex --review-round 0", prompt)
+
 
     def test_reviewer_prior_comments_excludes_commit_message_and_validation(self):
         """commit-review prompt drops commit-message and validation from Prior Comments (already in handoff)."""
@@ -1417,6 +1472,145 @@ class TestStateMachine(unittest.TestCase):
         self._ack_patcher.stop()
         self.conn.close()
         os.unlink(self.tmp.name)
+
+    def test_pull_request_make_requires_fresh_pr_metadata_comment(self):
+        tid = db.add_task(
+            self.conn,
+            "Prepare PR",
+            kind="pull_request",
+            branch="feat-pr",
+            coder_agent="claude",
+        )
+        db.update_task(self.conn, tid, status="running", next_step="pull-request-make")
+        task = db.get_task(self.conn, tid)
+
+        with patch.object(orchestrator, "run_agent", return_value=0):
+            success = orchestrator.handle_pull_request_make(task, self.conn)
+
+        self.assertFalse(success)
+        run_log = db.get_run_log(self.conn, tid)
+        self.assertTrue(
+            any("without writing a fresh PR metadata comment" in entry["message"] for entry in run_log)
+        )
+
+    def test_pull_request_make_transitions_to_review_when_metadata_recorded(self):
+        tid = db.add_task(
+            self.conn,
+            "Prepare PR",
+            kind="pull_request",
+            branch="feat-pr",
+            coder_agent="claude",
+        )
+        db.update_task(self.conn, tid, status="running", next_step="pull-request-make")
+        task = db.get_task(self.conn, tid)
+
+        def fake_pr_maker(name, prompt, task_id, conn, verb, **kw):
+            db.add_comment(
+                conn,
+                task_id,
+                "PR URL: https://github.com/acme/project/pull/12\n"
+                "Title: Add pull request support\n"
+                "Body:\nSummarizes the branch against master.",
+                kind="comment",
+                author=name,
+            )
+            return 0
+
+        with patch.object(orchestrator, "run_agent", side_effect=fake_pr_maker), \
+             patch.object(orchestrator, "ensure_branch", return_value=True):
+            result = orchestrator.advance(task, self.conn)
+
+        self.assertTrue(result)
+        updated = db.get_task(self.conn, tid)
+        self.assertEqual(updated["status"], "ready")
+        self.assertEqual(updated["next_step"], "pull-request-review")
+        self.assertIsNone(updated["commit_hash"])
+
+    def test_pull_request_review_approval_marks_done_without_commit(self):
+        tid = db.add_task(
+            self.conn,
+            "Review PR",
+            kind="pull_request",
+            branch="feat-pr",
+            coder_agent="claude",
+            reviewer_agent="gemini",
+        )
+        db.update_task(self.conn, tid, status="running", next_step="pull-request-review")
+        task = db.get_task(self.conn, tid)
+
+        def fake_pr_reviewer(name, prompt, task_id, conn, verb, **kw):
+            db.add_comment(conn, task_id, "PR metadata is clear", kind="approval", author=name, review_round=0)
+            return 0
+
+        with patch.object(orchestrator, "run_agent", side_effect=fake_pr_reviewer), \
+             patch.object(orchestrator, "ensure_branch", return_value=True):
+            result = orchestrator.advance(task, self.conn)
+
+        self.assertTrue(result)
+        updated = db.get_task(self.conn, tid)
+        self.assertEqual(updated["status"], "done")
+        self.assertEqual(updated["next_step"], "none")
+        self.assertIsNone(updated["commit_hash"])
+        self.assertEqual(updated["last_review_decision"], "approve")
+
+    def test_pull_request_review_rejection_returns_to_make(self):
+        tid = db.add_task(
+            self.conn,
+            "Review PR",
+            kind="pull_request",
+            branch="feat-pr",
+            coder_agent="claude",
+            reviewer_agent="gemini",
+        )
+        db.update_task(self.conn, tid, status="running", next_step="pull-request-review")
+        task = db.get_task(self.conn, tid)
+
+        def fake_pr_reviewer(name, prompt, task_id, conn, verb, **kw):
+            db.add_comment(conn, task_id, "Body misses validation", kind="rejection", author=name, review_round=0)
+            return 0
+
+        with patch.object(orchestrator, "run_agent", side_effect=fake_pr_reviewer), \
+             patch.object(orchestrator, "ensure_branch", return_value=True):
+            result = orchestrator.advance(task, self.conn)
+
+        self.assertTrue(result)
+        updated = db.get_task(self.conn, tid)
+        self.assertEqual(updated["status"], "ready")
+        self.assertEqual(updated["next_step"], "pull-request-make")
+        self.assertEqual(updated["review_round"], 1)
+        self.assertEqual(updated["last_review_decision"], "reject")
+
+    def test_pull_request_review_skip_marks_done_after_make(self):
+        tid = db.add_task(
+            self.conn,
+            "Prepare PR",
+            kind="pull_request",
+            branch="feat-pr",
+            coder_agent="claude",
+            skips=["pull-request-review"],
+        )
+        db.update_task(self.conn, tid, status="running", next_step="pull-request-make")
+        task = db.get_task(self.conn, tid)
+
+        def fake_pr_maker(name, prompt, task_id, conn, verb, **kw):
+            db.add_comment(
+                conn,
+                task_id,
+                "PR URL: https://github.com/acme/project/pull/12\nTitle: Add feature\nBody:\nSummary",
+                kind="comment",
+                author=name,
+            )
+            return 0
+
+        with patch.object(orchestrator, "run_agent", side_effect=fake_pr_maker), \
+             patch.object(orchestrator, "ensure_branch", return_value=True):
+            result = orchestrator.advance(task, self.conn)
+
+        self.assertTrue(result)
+        updated = db.get_task(self.conn, tid)
+        self.assertEqual(updated["status"], "done")
+        self.assertEqual(updated["next_step"], "none")
+        self.assertIsNone(updated["commit_hash"])
 
     def test_commit_make_path_a_requires_new_commit_message_when_older_one_exists(self):
         """Path A must add a new commit-message comment during the current run."""
@@ -4718,6 +4912,39 @@ class TestTaskPlanningCLI(unittest.TestCase):
             sorted(task["skips"]),
             ["commit-plan", "commit-review"],
         )
+
+    def test_add_pull_request_task(self):
+        """task add --kind pull_request starts at pull-request-make."""
+        r = self._run(
+            "add",
+            "Open PR",
+            "--kind",
+            "pull_request",
+            "--branch",
+            "feat-pr",
+            "--skip",
+            "pull-request-review",
+        )
+        self.assertEqual(r.returncode, 0)
+        tid = json.loads(r.stdout)["id"]
+        task = json.loads(self._run("show", str(tid)).stdout)
+        self.assertEqual(task["kind"], "pull_request")
+        self.assertEqual(task["next_step"], "pull-request-make")
+        self.assertEqual(task["skips"], ["pull-request-review"])
+
+    def test_add_pull_request_rejects_commit_review_skip(self):
+        r = self._run(
+            "add",
+            "Open PR",
+            "--kind",
+            "pull_request",
+            "--branch",
+            "feat-pr",
+            "--skip",
+            "commit-review",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("not allowed for pull request tasks", r.stderr)
 
     def test_show_displays_skips_and_commit_plan(self):
         """task show includes skips and commit_plan fields."""
