@@ -48,6 +48,7 @@ MAX_PRIOR_COMMENTS = config.MAX_PRIOR_COMMENTS
 POLL_INTERVAL = config.POLL_INTERVAL
 HEARTBEAT_INTERVAL = config.HEARTBEAT_INTERVAL
 STOP_AFTER_TASK_FILE = config.STOP_AFTER_TASK_FILE
+DASHBOARD_RESTART_COOLDOWN_SECONDS = 5.0
 MASTER_BRANCHES = {"master", "main"}
 MASTER_TASKS_DISABLED_MESSAGE = (
     "Tasks on master/main are disabled by default. Use a feature branch, or add "
@@ -99,6 +100,7 @@ _heartbeat_thread = None
 _singleton_lock_handle = None
 _dashboard_process = None
 _dashboard_metadata_path_for_process = None
+_dashboard_restart_after = None
 
 
 class SingletonLockError(RuntimeError):
@@ -223,7 +225,7 @@ def _remove_dashboard_metadata(path=None, db_path=None):
 
 def start_dashboard(db_path=None, *, host="127.0.0.1", preferred_port=None):
     """Start the matching repo dashboard as a child of this orchestrator."""
-    global _dashboard_metadata_path_for_process, _dashboard_process
+    global _dashboard_metadata_path_for_process, _dashboard_process, _dashboard_restart_after
 
     if _dashboard_process is not None and _dashboard_process.poll() is None:
         return _dashboard_process
@@ -245,18 +247,20 @@ def start_dashboard(db_path=None, *, host="127.0.0.1", preferred_port=None):
     )
     _dashboard_process = process
     _dashboard_metadata_path_for_process = metadata_path
+    _dashboard_restart_after = None
     log(f"Dashboard started with PID {process.pid}; metadata: {env['KO_DASHBOARD_METADATA_PATH']}")
     return process
 
 
 def stop_dashboard():
     """Stop the dashboard process owned by this orchestrator, if any."""
-    global _dashboard_metadata_path_for_process, _dashboard_process
+    global _dashboard_metadata_path_for_process, _dashboard_process, _dashboard_restart_after
 
     process = _dashboard_process
     metadata_path = _dashboard_metadata_path_for_process
     _dashboard_process = None
     _dashboard_metadata_path_for_process = None
+    _dashboard_restart_after = None
     if process is None:
         if metadata_path is not None:
             _remove_dashboard_metadata(metadata_path)
@@ -277,25 +281,51 @@ def stop_dashboard():
         _remove_dashboard_metadata(metadata_path)
 
 
-def check_dashboard_process(conn):
-    """Log dashboard failure without stopping task processing."""
-    global _dashboard_metadata_path_for_process, _dashboard_process
+def check_dashboard_process(
+    conn,
+    db_path=None,
+    *,
+    dashboard_enabled=True,
+    restart_cooldown_seconds=DASHBOARD_RESTART_COOLDOWN_SECONDS,
+):
+    """Restart the owned dashboard after exit without stopping task processing."""
+    global _dashboard_metadata_path_for_process, _dashboard_process, _dashboard_restart_after
+    if not dashboard_enabled:
+        return
+
     process = _dashboard_process
     metadata_path = _dashboard_metadata_path_for_process
-    if process is None:
+    now = time.monotonic()
+    if process is not None:
+        exit_code = process.poll()
+        if exit_code is None:
+            _dashboard_restart_after = None
+            return
+        db.update_runtime(
+            conn,
+            status_message=f"Dashboard exited with code {exit_code}; restart scheduled",
+            last_heartbeat_at="CURRENT_TIMESTAMP",
+        )
+        log(f"Dashboard exited with code {exit_code}; restart scheduled")
+        _dashboard_process = None
+        _dashboard_metadata_path_for_process = None
+        _remove_dashboard_metadata(metadata_path)
+        _dashboard_restart_after = now + restart_cooldown_seconds
         return
-    exit_code = process.poll()
-    if exit_code is None:
+
+    if _dashboard_restart_after is None:
+        _dashboard_restart_after = now + restart_cooldown_seconds
         return
+    if now < _dashboard_restart_after:
+        return
+
+    process = start_dashboard(db_path)
     db.update_runtime(
         conn,
-        status_message=f"Dashboard exited with code {exit_code}; orchestrator still running",
+        status_message=f"Dashboard restarted with PID {process.pid}",
         last_heartbeat_at="CURRENT_TIMESTAMP",
     )
-    log(f"Dashboard exited with code {exit_code}; orchestrator still running")
-    _dashboard_process = None
-    _dashboard_metadata_path_for_process = None
-    _remove_dashboard_metadata(metadata_path)
+    log(f"Dashboard restarted with PID {process.pid}")
 
 
 # ── Prompt assembly ────────────────────────────────────────────────────
@@ -2340,7 +2370,7 @@ def process_pinned_task(task, conn):
         return succeeded
 
 
-def main_loop(conn):
+def main_loop(conn, *, dashboard_enabled=False, db_path=None):
     """Poll for ready tasks and process them one at a time."""
     log("Kanban Orchestra started. Polling for ready tasks...")
 
@@ -2354,7 +2384,7 @@ def main_loop(conn):
     blocked_gate_logged_task_ids = set()
 
     while True:
-        check_dashboard_process(conn)
+        check_dashboard_process(conn, db_path, dashboard_enabled=dashboard_enabled)
         if stop_file.exists():
             log(f"Found {STOP_AFTER_TASK_FILE} — stopping cleanly. Deleting file.")
             stop_file.unlink()
@@ -2445,7 +2475,7 @@ def main(argv=None):
         conn = db.connect(db_path)
         global _log_conn
         _log_conn = conn
-        main_loop(conn)
+        main_loop(conn, dashboard_enabled=not args.no_dashboard, db_path=db_path)
     except SingletonLockError as e:
         log(str(e))
         return 1

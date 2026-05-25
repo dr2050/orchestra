@@ -3668,6 +3668,9 @@ class TestSingletonLock(unittest.TestCase):
 
     def tearDown(self):
         orchestrator.release_singleton_lock()
+        orchestrator._dashboard_process = None
+        orchestrator._dashboard_metadata_path_for_process = None
+        orchestrator._dashboard_restart_after = None
         self.tmpdir.cleanup()
 
     def _run_lock_probe(self):
@@ -3818,7 +3821,7 @@ class TestSingletonLock(unittest.TestCase):
 
         mock_remove.assert_not_called()
 
-    def test_check_dashboard_process_logs_failure_without_stopping_runtime(self):
+    def test_check_dashboard_process_schedules_restart_after_exit(self):
         fake_process = MagicMock()
         fake_process.poll.return_value = 7
         orchestrator._dashboard_process = fake_process
@@ -3828,15 +3831,55 @@ class TestSingletonLock(unittest.TestCase):
 
         with patch.object(orchestrator.db, "update_runtime") as mock_update, \
              patch.object(orchestrator, "_remove_dashboard_metadata") as mock_remove, \
+             patch.object(orchestrator.time, "monotonic", return_value=100.0), \
              patch.object(orchestrator, "log") as mock_log:
-            orchestrator.check_dashboard_process(conn)
+            orchestrator.check_dashboard_process(conn, restart_cooldown_seconds=3.0)
 
         mock_update.assert_called_once()
-        self.assertIn("Dashboard exited", mock_update.call_args.kwargs["status_message"])
+        self.assertIn("restart scheduled", mock_update.call_args.kwargs["status_message"])
         mock_log.assert_called_once()
         mock_remove.assert_called_once_with(metadata_path)
         self.assertIsNone(orchestrator._dashboard_process)
         self.assertIsNone(orchestrator._dashboard_metadata_path_for_process)
+        self.assertEqual(orchestrator._dashboard_restart_after, 103.0)
+
+    def test_check_dashboard_process_restarts_after_cooldown(self):
+        conn = MagicMock()
+        restarted_process = MagicMock()
+        restarted_process.pid = 4321
+        orchestrator._dashboard_process = None
+        orchestrator._dashboard_restart_after = 100.0
+
+        with patch.object(orchestrator, "start_dashboard", return_value=restarted_process) as start_dashboard, \
+             patch.object(orchestrator.db, "update_runtime") as mock_update, \
+             patch.object(orchestrator, "log") as mock_log, \
+             patch.object(orchestrator.time, "monotonic", return_value=99.9):
+            orchestrator.check_dashboard_process(conn, "/tmp/kanban.db")
+
+        start_dashboard.assert_not_called()
+        mock_update.assert_not_called()
+        mock_log.assert_not_called()
+
+        with patch.object(orchestrator, "start_dashboard", return_value=restarted_process) as start_dashboard, \
+             patch.object(orchestrator.db, "update_runtime") as mock_update, \
+             patch.object(orchestrator, "log") as mock_log, \
+             patch.object(orchestrator.time, "monotonic", return_value=100.0):
+            orchestrator.check_dashboard_process(conn, "/tmp/kanban.db")
+
+        start_dashboard.assert_called_once_with("/tmp/kanban.db")
+        mock_update.assert_called_once()
+        self.assertIn("Dashboard restarted", mock_update.call_args.kwargs["status_message"])
+        mock_log.assert_called_once_with("Dashboard restarted with PID 4321")
+
+    def test_check_dashboard_process_respects_no_dashboard(self):
+        conn = MagicMock()
+        orchestrator._dashboard_process = None
+        orchestrator._dashboard_restart_after = 1.0
+
+        with patch.object(orchestrator, "start_dashboard") as start_dashboard:
+            orchestrator.check_dashboard_process(conn, "/tmp/kanban.db", dashboard_enabled=False)
+
+        start_dashboard.assert_not_called()
 
 
 class TestOrchestratorControlIdentity(unittest.TestCase):
@@ -3916,6 +3959,19 @@ class TestActiveAgentProcesses(unittest.TestCase):
 class TestFleetConfig(unittest.TestCase):
     """Test flat fleet repo configuration and validation helpers."""
 
+    def test_display_path_abbreviates_only_home_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir).resolve()
+            home = base / "home"
+            inside = home / "work" / "repo"
+            outside = base / "outside"
+            inside.mkdir(parents=True)
+            outside.mkdir()
+
+            with patch.dict(os.environ, {"HOME": str(home)}):
+                self.assertEqual(fleet.display_path(inside), "~/work/repo")
+                self.assertEqual(fleet.display_path(outside), str(outside))
+
     def test_parse_config_lines_ignores_blanks_and_comments(self):
         text = """
         # local repos
@@ -3949,6 +4005,24 @@ class TestFleetConfig(unittest.TestCase):
                 exit_code = fleet.precheck([repo])
 
             self.assertEqual(exit_code, 1)
+
+    def test_precheck_abbreviates_home_dirty_repo_path(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir).resolve()
+            root = home / "repo"
+            root.mkdir()
+            subprocess.run(["git", "init"], cwd=root, check=True, stdout=subprocess.DEVNULL)
+            (root / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+            repo = fleet.discover_repo(str(root))
+            out = io.StringIO()
+
+            with patch.dict(os.environ, {"HOME": str(home)}), redirect_stdout(out):
+                exit_code = fleet.precheck([repo])
+
+            text = out.getvalue()
+            self.assertEqual(exit_code, 1)
+            self.assertIn("~/repo", text)
+            self.assertNotIn(str(root), text)
 
     def test_process_state_reports_dashboard_and_orchestrator(self):
         with tempfile.TemporaryDirectory() as tmpdir:

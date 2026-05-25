@@ -108,6 +108,21 @@ def expand_repo_path(raw_path: str) -> Path:
     return Path(os.path.expandvars(raw_path)).expanduser()
 
 
+def display_path(path: Path | str | None) -> str:
+    """Return a display-only path, abbreviating paths under HOME with ~."""
+    if path is None:
+        return "-"
+    resolved = Path(path).expanduser().resolve()
+    home = Path.home().resolve()
+    try:
+        relative = resolved.relative_to(home)
+    except ValueError:
+        return str(resolved)
+    if str(relative) == ".":
+        return "~"
+    return f"~/{relative}"
+
+
 def discover_repo(raw_path: str) -> FleetRepo:
     path = expand_repo_path(raw_path)
     label = label_for(path)
@@ -305,10 +320,10 @@ def require_startable(repos: list[FleetRepo]) -> None:
 
     print("Fleet precheck failed; not starting anything.", file=sys.stderr)
     for repo in invalid:
-        print(f"\n{repo.label}: {repo.path}", file=sys.stderr)
+        print(f"\n{repo.label}: {display_path(repo.path)}", file=sys.stderr)
         print(f"  {repo.error}", file=sys.stderr)
     for repo, lines in dirty:
-        print(f"\n{repo.label}: {repo.root}", file=sys.stderr)
+        print(f"\n{repo.label}: {display_path(repo.root)}", file=sys.stderr)
         for line in lines[:12]:
             print(f"  {line}", file=sys.stderr)
         if len(lines) > 12:
@@ -321,7 +336,7 @@ def print_status(repos: list[FleetRepo]) -> None:
     for repo in repos:
         status, orch_pid, dashboard_pid, session = repo_process_state(repo)
         dashboard_url = dashboard_status_url(repo)
-        rows.append((repo.label, status, orch_pid, dashboard_pid, session, dashboard_url, str(repo.root or repo.path)))
+        rows.append((repo.label, status, orch_pid, dashboard_pid, session, dashboard_url, display_path(repo.root or repo.path)))
 
     widths = [
         max(len("repo"), *(len(row[0]) for row in rows)),
@@ -360,11 +375,11 @@ def precheck(repos: list[FleetRepo]) -> int:
             continue
         lines = dirty_lines(repo)
         if lines:
-            rows.append((repo.label, "dirty", str(len(lines)), str(repo.root)))
+            rows.append((repo.label, "dirty", str(len(lines)), display_path(repo.root)))
             dirty.append((repo, lines))
             exit_code = 1
         else:
-            rows.append((repo.label, "clean", "0", str(repo.root)))
+            rows.append((repo.label, "clean", "0", display_path(repo.root)))
 
     widths = [
         max(len("repo"), *(len(row[0]) for row in rows)),
@@ -379,7 +394,7 @@ def precheck(repos: list[FleetRepo]) -> int:
     if dirty:
         print("\nDirty details:")
         for repo, lines in dirty:
-            print(f"\n{repo.label}: {repo.root}")
+            print(f"\n{repo.label}: {display_path(repo.root)}")
             for line in lines[:12]:
                 print(f"  {line}")
             if len(lines) > 12:

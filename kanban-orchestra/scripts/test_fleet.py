@@ -100,6 +100,23 @@ class TestFleetOperatorFlows(unittest.TestCase):
             self.assertEqual(columns[-2], "-")
             self.assertEqual(columns[-1], str(root))
 
+    def test_status_abbreviates_home_repo_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir).resolve()
+            root = home / "Documents" / "repo"
+            root.mkdir(parents=True)
+            repo = fleet.FleetRepo("repo", root, root)
+            out = io.StringIO()
+
+            with patch.dict(os.environ, {"HOME": str(home)}), \
+                 patch.object(fleet, "tmux_has_session", return_value=False), \
+                 redirect_stdout(out):
+                fleet.print_status([repo])
+
+            text = out.getvalue()
+            self.assertIn("~/Documents/repo", text)
+            self.assertNotIn(str(root), text)
+
     def test_start_launches_orchestrator_from_selected_repo_root(self):
         repo = fleet.FleetRepo("repo", Path("/tmp/repo"), Path("/tmp/repo"))
 
