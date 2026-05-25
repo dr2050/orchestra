@@ -193,8 +193,6 @@ Notes:
 - Use `ko-fleet dashboard <repo-label>` to open a running instance dashboard.
 - The dashboard chooses a free port at runtime and records it in
   `.kanban-orchestra/dashboard.json`.
-- `ko-ui` is deprecated process-manager compatibility; do not use it for new
-  workflows.
 
 ## Default operating pattern
 
