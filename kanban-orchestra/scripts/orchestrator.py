@@ -53,6 +53,7 @@ MASTER_TASKS_DISABLED_MESSAGE = (
     "Tasks on master/main are disabled by default. Use a feature branch, or add "
     "ALLOW_TASKS_ON_MASTER as a standalone line in AGENTS.md to explicitly opt in."
 )
+GITHUB_PR_URL_RE = re.compile(r"https://github\.com/[^\s/]+/[^\s/]+/pull/\d+")
 
 
 _log_conn = None
@@ -403,6 +404,37 @@ checks (e.g. `grep`, reading a single file) over full test reruns.
 """
 
 
+def _latest_pr_metadata_comment(comments):
+    """Return the most recent comment that appears to record GitHub PR metadata."""
+    for comment in reversed(comments):
+        message = comment.get("message") or ""
+        if GITHUB_PR_URL_RE.search(message):
+            return comment
+    return None
+
+
+def _build_pull_request_reviewer_handoff(task, comments):
+    """Build the handoff section for pull-request-review prompts."""
+    repo_root = _repo_root()
+    latest = _latest_pr_metadata_comment(comments)
+    if latest:
+        metadata = f"**Maker's recorded PR metadata** (most recent):\n```\n{latest['message']}\n```"
+    else:
+        metadata = "*(no GitHub PR metadata comment with a PR URL recorded yet)*"
+
+    return f"""## Pull Request Reviewer Handoff
+
+- **Repo root:** `{repo_root}`
+- **Task CLI:** `task <subcommand>` (shorthand defined in shared context above; expands to `"$ORCHESTRA_DIR/bin/ko-task"`)
+
+{metadata}
+
+**Your primary job** is to review the PR title and body quality, including whether
+the branch summary accurately reflects the branch against `master`.
+Do not perform implementation code review for this task kind.
+"""
+
+
 def _filter_comments_for_prompt(comments, verb):
     """
     Return a filtered, capped list of comments for the ## Prior Comments block.
@@ -459,10 +491,11 @@ def build_prompt(task, verb, agent_name, comments):
         comments_text = "\n".join(lines)
 
     # Determine role and visibility
-    is_coder = verb in ("commit-make", "commit-make-supertask", "commit-plan")
-    is_reviewer = verb in ("commit-review", "commit-review-supertask")
+    is_coder = verb in ("commit-make", "commit-make-supertask", "commit-plan", "pull-request-make")
+    is_reviewer = verb in ("commit-review", "commit-review-supertask", "pull-request-review")
     is_plan_reviewer = verb == "commit-plan-review"
     is_supertask_verb = verb in ("commit-make-supertask", "commit-review-supertask")
+    is_pull_request_verb = verb in ("pull-request-make", "pull-request-review")
     role = "coder" if is_coder else "reviewer"
 
     description = task["description"] or "(none)"
@@ -486,10 +519,10 @@ def build_prompt(task, verb, agent_name, comments):
     if not is_plan_reviewer:
         context_lines.append(f"- last_review_decision: {task['last_review_decision']}")
 
-    if not is_plan_reviewer and not is_supertask_verb:
+    if not is_plan_reviewer and not is_supertask_verb and not is_pull_request_verb:
         context_lines.append(f"- commit_hash: {task.get('commit_hash') or '(none)'}")
 
-    if is_coder and not is_supertask_verb:
+    if is_coder and not is_supertask_verb and not is_pull_request_verb:
         context_lines.append(f"- stash_ref: {task.get('stash_ref') or '(none)'}")
 
     # Show commit_plan only when relevant
@@ -538,7 +571,15 @@ def build_prompt(task, verb, agent_name, comments):
     ])
 
     _t = 'task'
-    if is_coder:
+    if verb == "pull-request-make":
+        context_lines.extend([
+            f"- {_t} show {task['id']}",
+            f"- {_t} show-comments {task['id']}",
+            f"- {_t} log {task['id']} \"<message>\"",
+            f"- cat <<'EOF' | {_t} comment {task['id']} --message-stdin --comment",
+            f"- {_t} list [--status <status>] [--next-step <step>] [--branch <branch>]",
+        ])
+    elif is_coder:
         context_lines.extend([
             f"- {_t} show {task['id']}",
             f"- {_t} show-comments {task['id']}",
@@ -569,6 +610,10 @@ def build_prompt(task, verb, agent_name, comments):
     task_context = "\n".join(context_lines)
 
     # For reviewers, inject an explicit handoff section between task context and verb prompt
+    if verb in ("pull-request-review",):
+        reviewer_handoff = _build_pull_request_reviewer_handoff(task, comments)
+        return f"{shared_text}\n\n{task_context}\n\n{reviewer_handoff}\n\n{verb_text}"
+
     if verb in ("commit-review", "commit-review-supertask"):
         reviewer_handoff = _build_reviewer_handoff(task, comments, skip_build_policy=skip_build_policy)
         return f"{shared_text}\n\n{task_context}\n\n{reviewer_handoff}\n\n{verb_text}"
@@ -1168,6 +1213,126 @@ def handle_commit_review(task, conn):
     return "reject"
 
 
+def handle_pull_request_make(task, conn):
+    """Execute pull-request-make. Returns True when fresh PR metadata was recorded."""
+    agent = task.get("coder_agent") or DEFAULT_CODER
+    db.update_task(conn, task["id"], coder_agent=agent)
+    ensure_agent_acked(agent, task["id"], conn)
+    comments = db.get_comments(conn, task["id"])
+    max_comment_id_before = max((c["id"] for c in comments), default=0)
+    prompt = build_prompt(task, "pull-request-make", agent, comments)
+
+    db.update_runtime(
+        conn,
+        current_step="pull-request-make",
+        active_agents=1,
+        status_message=f"{agent} preparing PR metadata for '{task['title']}'",
+    )
+
+    db.add_comment(
+        conn,
+        task["id"],
+        f"Starting pull-request-make with maker '{agent}'.",
+        kind="comment",
+        author="orchestrator",
+    )
+
+    exit_code = run_agent(agent, prompt, task["id"], conn, "pull-request-make")
+    conn.commit()
+
+    if exit_code != 0:
+        log(f"pull-request-make failed with exit code {exit_code}", task["id"])
+        return False
+
+    comments_after = db.get_comments(conn, task["id"])
+    new_metadata_comments = [
+        c for c in comments_after
+        if c["id"] > max_comment_id_before and GITHUB_PR_URL_RE.search(c.get("message") or "")
+    ]
+    if not new_metadata_comments:
+        log(
+            f"pull-request-make: {agent} exited 0 but wrote no fresh PR metadata comment with a GitHub PR URL; treating as failure",
+            task["id"],
+        )
+        db.add_run_log(
+            conn,
+            task["id"],
+            f"{agent} exited 0 without writing a fresh PR metadata comment containing a GitHub PR URL",
+            verb="pull-request-make",
+            author="orchestrator",
+        )
+        return False
+
+    return True
+
+
+def handle_pull_request_review(task, conn):
+    """
+    Execute pull-request-review with the task's configured reviewer agent.
+    Returns ('approve'|'reject'|'error').
+    """
+    reviewer = _task_reviewer(task)
+    ensure_agent_acked(reviewer, task["id"], conn)
+    comments = db.get_comments(conn, task["id"])
+
+    db.update_runtime(
+        conn,
+        current_step="pull-request-review",
+        active_agents=1,
+        review_round=task["review_round"],
+        status_message=f"Round {task['review_round']}: {reviewer} reviewing PR metadata",
+    )
+
+    db.add_comment(
+        conn,
+        task["id"],
+        f"Starting pull-request-review round {task['review_round']} with reviewer: {reviewer}.",
+        kind="comment",
+        author="orchestrator",
+    )
+
+    prompt = build_prompt(task, "pull-request-review", reviewer, comments)
+    exit_code = run_agent(reviewer, prompt, task["id"], conn, "pull-request-review")
+
+    if exit_code != 0:
+        db.add_comment(
+            conn,
+            task["id"],
+            f"Reviewer '{reviewer}' could not complete pull-request-review round {task['review_round']} "
+            f"due to an operational error (exit code {exit_code}).",
+            kind="comment",
+            author="orchestrator",
+        )
+        return "error"
+
+    round_comments = db.get_comments(conn, task["id"])
+    current_round = task["review_round"]
+    reviewer_decisions = [
+        c for c in round_comments
+        if c["review_round"] == current_round
+        and c["kind"] in ("approval", "rejection")
+    ]
+
+    if not reviewer_decisions:
+        log(
+            f"Reviewer '{reviewer}' exited 0 but left no PR review decision for round {current_round}",
+            task["id"],
+        )
+        return "reject"
+
+    decision = reviewer_decisions[-1]["kind"]
+    if decision == "approval":
+        db.add_comment(
+            conn,
+            task["id"],
+            f"Pull request review round {task['review_round']} approved by {reviewer}.",
+            kind="comment",
+            author="orchestrator",
+        )
+        return "approve"
+    return "reject"
+
+
 def handle_commit_make_supertask(task, conn):
     """Execute a commit-make-supertask (planning) step. Returns True on success."""
     agent = task.get("coder_agent") or DEFAULT_SUPER_PLANNER
@@ -1433,6 +1598,21 @@ def _finalize_commit(task, conn, done_without_commit=False):
     _check_parent_completion(task_id, conn)
 
 
+def _finalize_pull_request(task, conn):
+    """Mark a pull request task done after metadata review approval or skip."""
+    task_id = task["id"]
+    db.update_task(conn, task_id, status="done", next_step="none")
+    db.add_comment(
+        conn,
+        task_id,
+        "Task complete: pull request metadata approved.",
+        kind="comment",
+        author="orchestrator",
+    )
+    db.update_runtime(conn, status_message=f"Pull request task {task_id} done")
+    log("Pull request task done", task_id)
+
+
 def _requeue_for_review_after_deferred_build(task, conn):
     """Re-enter commit-review after a SKIP_BUILD_UNTIL_APPROVED Path B build changed the staged diff.
 
@@ -1534,6 +1714,7 @@ def advance(task, conn):
     # Enforce step/kind cross-contamination rules
     _TASK_ONLY_STEPS = {"commit-make", "commit-review", "commit-plan", "commit-plan-review"}
     _SUPERTASK_ONLY_STEPS = {"commit-make-supertask", "commit-review-supertask"}
+    _PULL_REQUEST_ONLY_STEPS = {"pull-request-make", "pull-request-review"}
     if kind == "task" and step in _SUPERTASK_ONLY_STEPS:
         mark_blocked(
             task_id,
@@ -1544,6 +1725,16 @@ def advance(task, conn):
             preserve_wip=False,
         )
         return False
+    if kind == "task" and step in _PULL_REQUEST_ONLY_STEPS:
+        mark_blocked(
+            task_id,
+            conn,
+            f"Normal task cannot use pull request step '{step}'. Fix next_step before re-queueing.",
+            f"Blocked: task {task_id} has pull request step '{step}'",
+            log_message=f"Blocked: normal task has pull request step '{step}'",
+            preserve_wip=False,
+        )
+        return False
     if kind == "supertask" and step in _TASK_ONLY_STEPS:
         mark_blocked(
             task_id,
@@ -1551,6 +1742,26 @@ def advance(task, conn):
             f"Supertask cannot use task-only step '{step}'. Fix next_step before re-queueing.",
             f"Blocked: supertask {task_id} has task-only step '{step}'",
             log_message=f"Blocked: supertask has task-only step '{step}'",
+            preserve_wip=False,
+        )
+        return False
+    if kind == "supertask" and step in _PULL_REQUEST_ONLY_STEPS:
+        mark_blocked(
+            task_id,
+            conn,
+            f"Supertask cannot use pull request step '{step}'. Fix next_step before re-queueing.",
+            f"Blocked: supertask {task_id} has pull request step '{step}'",
+            log_message=f"Blocked: supertask has pull request step '{step}'",
+            preserve_wip=False,
+        )
+        return False
+    if kind == "pull_request" and step not in _PULL_REQUEST_ONLY_STEPS:
+        mark_blocked(
+            task_id,
+            conn,
+            f"Pull request task cannot use step '{step}'. Fix next_step before re-queueing.",
+            f"Blocked: pull request task {task_id} has invalid step '{step}'",
+            log_message=f"Blocked: pull request task has invalid step '{step}'",
             preserve_wip=False,
         )
         return False
@@ -1660,6 +1871,10 @@ def advance(task, conn):
         return True
 
     elif step == "commit-plan":
+        if db.should_skip_step(conn, task_id, "commit-plan"):
+            _approve_plan(task, conn)
+            return True
+
         success = handle_commit_plan(task, conn)
         if not success:
             mark_blocked(
@@ -1682,6 +1897,9 @@ def advance(task, conn):
         return True
 
     elif step == "commit-plan-review":
+        if db.should_skip_step(conn, task_id, "commit-plan-review"):
+            _approve_plan(task, conn)
+            return True
 
         outcome = handle_commit_plan_review(task, conn)
 
@@ -1708,6 +1926,89 @@ def advance(task, conn):
                            kind="comment", author="orchestrator")
             db.update_runtime(conn, status_message=f"Plan rejected; task {task_id} returning to commit-plan")
             log("Plan rejected, returning to commit-plan", task_id)
+        return True
+
+    elif step == "pull-request-make":
+        success = handle_pull_request_make(task, conn)
+        if not success:
+            agent = task.get("coder_agent") or DEFAULT_CODER
+            mark_blocked(
+                task_id,
+                conn,
+                f"pull-request-make failed for maker '{agent}'; marked blocked for human triage.",
+                f"Blocked: pull-request-make failed for task {task_id}",
+                log_message="Blocked: pull-request-make failed",
+                preserve_wip=False,
+            )
+            return False
+
+        if db.should_skip_step(conn, task_id, "pull-request-review"):
+            _finalize_pull_request(task, conn)
+        else:
+            db.update_task(
+                conn,
+                task_id,
+                status="ready",
+                next_step="pull-request-review",
+                last_review_decision="none",
+            )
+            db.update_runtime(conn, status_message=f"Pull request task {task_id} metadata queued for review")
+            log("Pull request metadata queued for review", task_id)
+        return True
+
+    elif step == "pull-request-review":
+        outcome = handle_pull_request_review(task, conn)
+
+        if outcome == "error":
+            reviewer = _task_reviewer(task)
+            mark_blocked(
+                task_id,
+                conn,
+                f"Reviewer '{reviewer}' failed pull-request-review round {task['review_round']}; "
+                "task blocked for human triage.",
+                f"Blocked: PR reviewer failed on task {task_id}",
+                log_message="Blocked: PR reviewer failed",
+                preserve_wip=False,
+            )
+            return False
+
+        if outcome == "approve":
+            db.update_task(conn, task_id, last_review_decision="approve")
+            _finalize_pull_request(task, conn)
+        else:
+            new_round = task["review_round"] + 1
+            if new_round >= MAX_REVIEW_ROUNDS:
+                db.update_task(
+                    conn, task_id,
+                    review_round=new_round, last_review_decision="reject",
+                )
+                mark_blocked(
+                    task_id,
+                    conn,
+                    f"Blocked: reached max pull request review rounds ({MAX_REVIEW_ROUNDS})",
+                    f"Pull request task {task_id} blocked after {MAX_REVIEW_ROUNDS} review rounds",
+                    log_message=f"Blocked after {MAX_REVIEW_ROUNDS} pull request review rounds",
+                    preserve_wip=False,
+                )
+            else:
+                db.update_task(
+                    conn,
+                    task_id,
+                    status="ready",
+                    next_step="pull-request-make",
+                    review_round=new_round,
+                    last_review_decision="reject",
+                )
+                db.add_comment(
+                    conn,
+                    task_id,
+                    f"Pull request review round {task['review_round']} rejected; "
+                    f"returning to pull-request-make for round {new_round}.",
+                    kind="comment",
+                    author="orchestrator",
+                )
+                db.update_runtime(conn, status_message=f"PR metadata rejected; returning to pull-request-make round {new_round}")
+                log(f"Pull request metadata rejected, advancing to round {new_round}", task_id)
         return True
 
     elif step == "commit-make":
@@ -1850,7 +2151,7 @@ def recover_running_tasks(conn):
     ).fetchall()
     for row in rows:
         task = db._row_to_task(row)
-        if task["next_step"] in ("commit-review", "commit-review-supertask"):
+        if task["next_step"] in ("commit-review", "commit-review-supertask", "pull-request-review"):
             new_round = task["review_round"] + 1
             db.update_task(conn, task["id"], status="ready", review_round=new_round, last_review_decision="none")
             db.add_comment(
@@ -1976,7 +2277,7 @@ def process_pinned_task(task, conn):
             # Ctrl-C during processing — recover task, then re-raise
             # so main() can run the stopping→stopped shutdown path.
             log("Interrupted!", task_id)
-            if current["next_step"] in ("commit-review", "commit-review-supertask"):
+            if current["next_step"] in ("commit-review", "commit-review-supertask", "pull-request-review"):
                 new_round = current["review_round"] + 1
                 db.update_task(conn, task_id,
                                status="ready", next_step=current["next_step"],

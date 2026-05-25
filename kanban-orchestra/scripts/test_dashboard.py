@@ -700,12 +700,28 @@ class TestRecentlyDone(unittest.TestCase):
             reviewer_agent="opus",
         )
         db.add_comment(self.conn, tid, "LGTM", kind="approval", author="gemini", review_round=0)
+        db.add_comment(self.conn, tid, "Fix this", kind="rejection", author="opus", review_round=0)
+        db.add_comment(self.conn, tid, "Still failing", kind="rejection", author="opus", review_round=1)
         html = dashboard.render_recently_done(self.conn)
         self.assertIn("Done task", html)
         self.assertIn("22222222", html)
         self.assertIn("claude", html)
-        self.assertIn("opus", html)
         self.assertIn("gemini", html)
+        self.assertIn("<th class='col-agent'>Reviewer</th>", html)
+        self.assertIn("<th class='col-count'>Rejections</th>", html)
+        self.assertIn("<td>2</td>", html)
+        self.assertNotIn("Configured Reviewer", html)
+        self.assertNotIn("Approver", html)
+
+    def test_recently_done_reviewer_falls_back_to_configured_reviewer(self):
+        tid = db.add_task(self.conn, "Done task", branch="feat-done", reviewer_agent="opus")
+        db.update_task(self.conn, tid, status="done")
+
+        html = dashboard.render_recently_done(self.conn)
+
+        self.assertIn("Done task", html)
+        self.assertIn("opus", html)
+        self.assertIn("<td>0</td>", html)
 
     def test_recently_done_initially_hides_rows_after_first_five(self):
         for i in range(7):

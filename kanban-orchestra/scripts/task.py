@@ -37,9 +37,16 @@ import repo_policy
 
 
 AGENTS = config.AGENTS
-VALID_SKIPS = {"commit-plan", "commit-plan-review", "commit-review", "commit-review-supertask"}
+VALID_SKIPS = {
+    "commit-plan",
+    "commit-plan-review",
+    "commit-review",
+    "commit-review-supertask",
+    "pull-request-review",
+}
 NORMAL_TASK_SKIPS = {"commit-plan", "commit-plan-review", "commit-review"}
 SUPERTASK_SKIPS = {"commit-review-supertask"}
+PULL_REQUEST_SKIPS = {"pull-request-review"}
 BRANCH_NAME_RE = re.compile(r'^[A-Za-z0-9._/][A-Za-z0-9._/ -]*$')
 MASTER_BRANCHES = {"master", "main"}
 MASTER_TASKS_DISABLED_ERROR = (
@@ -145,12 +152,11 @@ def cmd_add(args, conn):
     branch = args.branch
     skips = list(args.skip or [])
 
-    # Normal tasks skip planning by default; union with any user-supplied skips
-    # so e.g. `--skip commit-review` keeps the default plan skips.
+    # Normal tasks skip planning by default; plan review is inferred from that
+    # skip so users and defaults only need to store the root planning skip.
     if kind == "task":
-        for default_skip in ("commit-plan-review", "commit-plan"):
-            if default_skip not in skips:
-                skips.insert(0, default_skip)
+        if "commit-plan" not in skips:
+            skips.insert(0, "commit-plan")
 
     # Validate skips
     for s in skips:
@@ -163,11 +169,14 @@ def cmd_add(args, conn):
         if kind == "supertask" and s not in SUPERTASK_SKIPS:
             print(f"Error: skip target '{s}' is not allowed for supertasks. Valid: {', '.join(sorted(SUPERTASK_SKIPS))}", file=sys.stderr)
             sys.exit(1)
+        if kind == "pull_request" and s not in PULL_REQUEST_SKIPS:
+            print(f"Error: skip target '{s}' is not allowed for pull request tasks. Valid: {', '.join(sorted(PULL_REQUEST_SKIPS))}", file=sys.stderr)
+            sys.exit(1)
 
     if parent_task_id is not None:
-        if kind == "supertask":
+        if kind != "task":
             print(
-                "Error: --kind supertask is not allowed for child tasks (children must be kind='task')",
+                f"Error: child tasks must use kind='task'; got kind='{kind}'",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -276,6 +285,9 @@ def cmd_set(args, conn):
             if task["kind"] == "supertask" and s not in SUPERTASK_SKIPS:
                 print(f"Error: skip target '{s}' is not allowed for supertasks. Valid: {', '.join(sorted(SUPERTASK_SKIPS))}", file=sys.stderr)
                 sys.exit(1)
+            if task["kind"] == "pull_request" and s not in PULL_REQUEST_SKIPS:
+                print(f"Error: skip target '{s}' is not allowed for pull request tasks. Valid: {', '.join(sorted(PULL_REQUEST_SKIPS))}", file=sys.stderr)
+                sys.exit(1)
             db.add_task_skip(conn, args.task_id, s)
 
     if args.remove_skip:
@@ -288,6 +300,9 @@ def cmd_set(args, conn):
                 sys.exit(1)
             if task["kind"] == "supertask" and s not in SUPERTASK_SKIPS:
                 print(f"Error: skip target '{s}' is not allowed for supertasks. Valid: {', '.join(sorted(SUPERTASK_SKIPS))}", file=sys.stderr)
+                sys.exit(1)
+            if task["kind"] == "pull_request" and s not in PULL_REQUEST_SKIPS:
+                print(f"Error: skip target '{s}' is not allowed for pull request tasks. Valid: {', '.join(sorted(PULL_REQUEST_SKIPS))}", file=sys.stderr)
                 sys.exit(1)
             db.remove_task_skip(conn, args.task_id, s)
 
@@ -465,7 +480,7 @@ def cmd_follow_up(args, conn):
         branch=task["branch"],
         coder_agent=task["coder_agent"],
         reviewer_agent=task.get("reviewer_agent") or config.DEFAULT_REVIEWER,
-        skips=["commit-plan", "commit-plan-review"],
+        skips=["commit-plan"],
     )
 
     db.update_task(conn, args.task_id, follow_up_task_id=follow_up_id)
@@ -626,7 +641,7 @@ def build_parser():
     p_add.add_argument("--branch", default=None)
     p_add.add_argument("--coder-agent", default=None)
     p_add.add_argument("--reviewer-agent", default=None)
-    p_add.add_argument("--kind", choices=["task", "supertask"], default="task")
+    p_add.add_argument("--kind", choices=["task", "supertask", "pull_request"], default="task")
     p_add.add_argument("--parent", type=int, default=None)
     p_add.add_argument("--sequence-index", type=int, default=None)
     p_add.add_argument("--skip", action="append", default=None)

@@ -110,6 +110,19 @@ class TestDB(unittest.TestCase):
         task = db.get_task(self.conn, tid)
         self.assertEqual(task["reviewer_agent"], DEFAULT_REVIEWER)
 
+    def test_add_pull_request_task_starts_at_pull_request_make(self):
+        tid = db.add_task(
+            self.conn,
+            "Open PR",
+            kind="pull_request",
+            branch="feature-branch",
+            reviewer_agent="gemini",
+        )
+        task = db.get_task(self.conn, tid)
+        self.assertEqual(task["kind"], "pull_request")
+        self.assertEqual(task["next_step"], "pull-request-make")
+        self.assertEqual(task["reviewer_agent"], "gemini")
+
     def test_list_tasks(self):
         db.add_task(self.conn, "Task 1")
         db.add_task(self.conn, "Task 2")
@@ -213,7 +226,7 @@ class TestDB(unittest.TestCase):
 
         task = db.list_tasks(self.conn)[0]
         self.assertEqual(task["next_step"], "commit-make")
-        self.assertEqual(task["skips"], ["commit-plan", "commit-plan-review"])
+        self.assertEqual(task["skips"], ["commit-plan"])
 
     def test_task_add_unions_default_plan_skips_with_user_skips(self):
         args = SimpleNamespace(
@@ -234,7 +247,7 @@ class TestDB(unittest.TestCase):
 
         task = db.list_tasks(self.conn)[0]
         self.assertEqual(task["next_step"], "commit-make")
-        self.assertEqual(task["skips"], ["commit-plan", "commit-plan-review", "commit-review"])
+        self.assertEqual(task["skips"], ["commit-plan", "commit-review"])
 
     def test_missing_allow_when_blocked_column_is_migrated(self):
         tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -557,8 +570,8 @@ class TestDB(unittest.TestCase):
         finally:
             os.unlink(tmp.name)
 
-    def test_outdated_next_step_constraint_raises_error(self):
-        """connect() must raise RuntimeError when next_step CHECK lacks 'commit-plan'."""
+    def test_outdated_next_step_constraint_auto_migrates(self):
+        """connect() auto-migrates next_step CHECK constraints."""
         tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         tmp.close()
         try:
@@ -600,12 +613,21 @@ class TestDB(unittest.TestCase):
             legacy.commit()
             legacy.close()
 
-            with self.assertRaises(RuntimeError) as ctx:
-                db.connect(tmp.name)
-            self.assertIn("outdated", str(ctx.exception))
-            self.assertIn("commit-plan", str(ctx.exception))
+            conn = db.connect(tmp.name)
+            try:
+                schema = conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'"
+                ).fetchone()[0]
+                self.assertIn("commit-plan", schema)
+                self.assertIn("pull-request-make", schema)
+                self.assertIn("pull_request", schema)
+            finally:
+                conn.close()
         finally:
-            os.unlink(tmp.name)
+            for suffix in ("", "-shm", "-wal"):
+                path = tmp.name + suffix
+                if os.path.exists(path):
+                    os.unlink(path)
 
     def test_stale_comments_schema_missing_plan_kinds_auto_migrates(self):
         """connect() auto-migrates the comments table when kind CHECK is outdated."""
@@ -1161,6 +1183,48 @@ class TestPromptAssembly(unittest.TestCase):
         self.assertNotIn("Maker's validation summary", make_prompt)
         self.assertNotIn("Reviewer Handoff", make_prompt)
 
+    def test_pull_request_make_prompt_records_pr_metadata_not_commit_message(self):
+        task = {
+            "id": 30, "title": "Prepare PR", "description": None,
+            "branch": "feat-pr", "status": "running", "next_step": "pull-request-make",
+            "review_round": 0, "last_review_decision": "none",
+            "coder_agent": "claude", "reviewer_agent": "codex",
+        }
+
+        prompt = orchestrator.build_prompt(task, "pull-request-make", "claude", [])
+
+        self.assertIn("Create or update the GitHub", prompt)
+        self.assertIn("PR URL: https://github.com/<owner>/<repo>/pull/<number>", prompt)
+        self.assertIn("Title: <PR title>", prompt)
+        self.assertIn("Body:", prompt)
+        self.assertIn("task comment 30 --message-stdin --comment", prompt)
+        self.assertNotIn("--commit-message", prompt)
+        self.assertNotIn("get-commit-footer", prompt)
+
+    def test_pull_request_review_prompt_limits_scope_to_metadata(self):
+        task = {
+            "id": 31, "title": "Review PR", "description": None,
+            "branch": "feat-pr", "status": "running", "next_step": "pull-request-review",
+            "review_round": 0, "last_review_decision": "none",
+            "coder_agent": "claude", "reviewer_agent": "codex",
+        }
+        comments = [{
+            "id": 1,
+            "kind": "comment",
+            "review_round": 0,
+            "author": "claude",
+            "message": "PR URL: https://github.com/acme/project/pull/12\nTitle: Add feature\nBody:\nSummary",
+        }]
+
+        prompt = orchestrator.build_prompt(task, "pull-request-review", "codex", comments)
+
+        self.assertIn("Pull Request Reviewer Handoff", prompt)
+        self.assertIn("https://github.com/acme/project/pull/12", prompt)
+        self.assertIn("title/body quality", prompt)
+        self.assertIn("branch-summary accuracy", prompt)
+        self.assertIn("Do not perform implementation code review", prompt)
+        self.assertIn("--approval --author codex --review-round 0", prompt)
+
 
     def test_reviewer_prior_comments_excludes_commit_message_and_validation(self):
         """commit-review prompt drops commit-message and validation from Prior Comments (already in handoff)."""
@@ -1417,6 +1481,145 @@ class TestStateMachine(unittest.TestCase):
         self._ack_patcher.stop()
         self.conn.close()
         os.unlink(self.tmp.name)
+
+    def test_pull_request_make_requires_fresh_pr_metadata_comment(self):
+        tid = db.add_task(
+            self.conn,
+            "Prepare PR",
+            kind="pull_request",
+            branch="feat-pr",
+            coder_agent="claude",
+        )
+        db.update_task(self.conn, tid, status="running", next_step="pull-request-make")
+        task = db.get_task(self.conn, tid)
+
+        with patch.object(orchestrator, "run_agent", return_value=0):
+            success = orchestrator.handle_pull_request_make(task, self.conn)
+
+        self.assertFalse(success)
+        run_log = db.get_run_log(self.conn, tid)
+        self.assertTrue(
+            any("without writing a fresh PR metadata comment" in entry["message"] for entry in run_log)
+        )
+
+    def test_pull_request_make_transitions_to_review_when_metadata_recorded(self):
+        tid = db.add_task(
+            self.conn,
+            "Prepare PR",
+            kind="pull_request",
+            branch="feat-pr",
+            coder_agent="claude",
+        )
+        db.update_task(self.conn, tid, status="running", next_step="pull-request-make")
+        task = db.get_task(self.conn, tid)
+
+        def fake_pr_maker(name, prompt, task_id, conn, verb, **kw):
+            db.add_comment(
+                conn,
+                task_id,
+                "PR URL: https://github.com/acme/project/pull/12\n"
+                "Title: Add pull request support\n"
+                "Body:\nSummarizes the branch against master.",
+                kind="comment",
+                author=name,
+            )
+            return 0
+
+        with patch.object(orchestrator, "run_agent", side_effect=fake_pr_maker), \
+             patch.object(orchestrator, "ensure_branch", return_value=True):
+            result = orchestrator.advance(task, self.conn)
+
+        self.assertTrue(result)
+        updated = db.get_task(self.conn, tid)
+        self.assertEqual(updated["status"], "ready")
+        self.assertEqual(updated["next_step"], "pull-request-review")
+        self.assertIsNone(updated["commit_hash"])
+
+    def test_pull_request_review_approval_marks_done_without_commit(self):
+        tid = db.add_task(
+            self.conn,
+            "Review PR",
+            kind="pull_request",
+            branch="feat-pr",
+            coder_agent="claude",
+            reviewer_agent="gemini",
+        )
+        db.update_task(self.conn, tid, status="running", next_step="pull-request-review")
+        task = db.get_task(self.conn, tid)
+
+        def fake_pr_reviewer(name, prompt, task_id, conn, verb, **kw):
+            db.add_comment(conn, task_id, "PR metadata is clear", kind="approval", author=name, review_round=0)
+            return 0
+
+        with patch.object(orchestrator, "run_agent", side_effect=fake_pr_reviewer), \
+             patch.object(orchestrator, "ensure_branch", return_value=True):
+            result = orchestrator.advance(task, self.conn)
+
+        self.assertTrue(result)
+        updated = db.get_task(self.conn, tid)
+        self.assertEqual(updated["status"], "done")
+        self.assertEqual(updated["next_step"], "none")
+        self.assertIsNone(updated["commit_hash"])
+        self.assertEqual(updated["last_review_decision"], "approve")
+
+    def test_pull_request_review_rejection_returns_to_make(self):
+        tid = db.add_task(
+            self.conn,
+            "Review PR",
+            kind="pull_request",
+            branch="feat-pr",
+            coder_agent="claude",
+            reviewer_agent="gemini",
+        )
+        db.update_task(self.conn, tid, status="running", next_step="pull-request-review")
+        task = db.get_task(self.conn, tid)
+
+        def fake_pr_reviewer(name, prompt, task_id, conn, verb, **kw):
+            db.add_comment(conn, task_id, "Body misses validation", kind="rejection", author=name, review_round=0)
+            return 0
+
+        with patch.object(orchestrator, "run_agent", side_effect=fake_pr_reviewer), \
+             patch.object(orchestrator, "ensure_branch", return_value=True):
+            result = orchestrator.advance(task, self.conn)
+
+        self.assertTrue(result)
+        updated = db.get_task(self.conn, tid)
+        self.assertEqual(updated["status"], "ready")
+        self.assertEqual(updated["next_step"], "pull-request-make")
+        self.assertEqual(updated["review_round"], 1)
+        self.assertEqual(updated["last_review_decision"], "reject")
+
+    def test_pull_request_review_skip_marks_done_after_make(self):
+        tid = db.add_task(
+            self.conn,
+            "Prepare PR",
+            kind="pull_request",
+            branch="feat-pr",
+            coder_agent="claude",
+            skips=["pull-request-review"],
+        )
+        db.update_task(self.conn, tid, status="running", next_step="pull-request-make")
+        task = db.get_task(self.conn, tid)
+
+        def fake_pr_maker(name, prompt, task_id, conn, verb, **kw):
+            db.add_comment(
+                conn,
+                task_id,
+                "PR URL: https://github.com/acme/project/pull/12\nTitle: Add feature\nBody:\nSummary",
+                kind="comment",
+                author=name,
+            )
+            return 0
+
+        with patch.object(orchestrator, "run_agent", side_effect=fake_pr_maker), \
+             patch.object(orchestrator, "ensure_branch", return_value=True):
+            result = orchestrator.advance(task, self.conn)
+
+        self.assertTrue(result)
+        updated = db.get_task(self.conn, tid)
+        self.assertEqual(updated["status"], "done")
+        self.assertEqual(updated["next_step"], "none")
+        self.assertIsNone(updated["commit_hash"])
 
     def test_commit_make_path_a_requires_new_commit_message_when_older_one_exists(self):
         """Path A must add a new commit-message comment during the current run."""
@@ -4566,6 +4769,37 @@ class TestTaskPlanningDB(unittest.TestCase):
         self.assertEqual(task["next_step"], "commit-make")
         self.assertEqual(task["skips"], ["commit-plan"])
 
+    def test_skip_commit_plan_implies_skip_commit_plan_review(self):
+        """Skipping commit-plan also skips commit-plan-review without storing both."""
+        tid = db.add_task(self.conn, "Skip planning", skips=["commit-plan"])
+
+        self.assertTrue(db.should_skip_step(self.conn, tid, "commit-plan-review"))
+
+    def test_missing_commit_plan_implies_skip_commit_plan_review(self):
+        """Plan review is skipped when there is no persisted plan to review."""
+        tid = db.add_task(self.conn, "No plan yet")
+
+        self.assertTrue(db.should_skip_step(self.conn, tid, "commit-plan-review"))
+
+    def test_commit_plan_review_runs_when_plan_exists(self):
+        """Plan review is not skipped after commit-plan has stored a plan."""
+        tid = db.add_task(self.conn, "Plan exists")
+        db.update_task(self.conn, tid, commit_plan="Draft implementation plan")
+
+        self.assertFalse(db.should_skip_step(self.conn, tid, "commit-plan-review"))
+
+    def test_existing_explicit_plan_review_skip_still_works(self):
+        """Tasks that already store both planning skips keep their explicit skip."""
+        tid = db.add_task(
+            self.conn,
+            "Legacy explicit skips",
+            skips=["commit-plan", "commit-plan-review"],
+        )
+        task = db.get_task(self.conn, tid)
+
+        self.assertEqual(task["skips"], ["commit-plan", "commit-plan-review"])
+        self.assertTrue(db.should_skip_step(self.conn, tid, "commit-plan-review"))
+
     def test_supertask_always_starts_at_commit_make_supertask(self):
         """Supertasks always use commit-make-supertask regardless of skips."""
         tid = db.add_task(self.conn, "Supertask", kind="supertask", skips=["commit-plan"])
@@ -4665,7 +4899,7 @@ class TestTaskPlanningCLI(unittest.TestCase):
         tid = json.loads(r.stdout)["id"]
         task = json.loads(self._run("show", str(tid)).stdout)
         self.assertEqual(task["next_step"], "commit-make")
-        self.assertEqual(task["skips"], ["commit-plan", "commit-plan-review"])
+        self.assertEqual(task["skips"], ["commit-plan"])
 
     def test_add_with_skip_starts_at_commit_make(self):
         """task add --skip commit-plan starts at commit-make."""
@@ -4674,7 +4908,7 @@ class TestTaskPlanningCLI(unittest.TestCase):
         tid = json.loads(r.stdout)["id"]
         task = json.loads(self._run("show", str(tid)).stdout)
         self.assertEqual(task["next_step"], "commit-make")
-        self.assertEqual(task["skips"], ["commit-plan", "commit-plan-review"])
+        self.assertEqual(task["skips"], ["commit-plan"])
 
     def test_add_with_skip_unions_with_default(self):
         """task add --skip commit-review keeps the default commit-plan skip too."""
@@ -4685,8 +4919,41 @@ class TestTaskPlanningCLI(unittest.TestCase):
         self.assertEqual(task["next_step"], "commit-make")
         self.assertEqual(
             sorted(task["skips"]),
-            ["commit-plan", "commit-plan-review", "commit-review"],
+            ["commit-plan", "commit-review"],
         )
+
+    def test_add_pull_request_task(self):
+        """task add --kind pull_request starts at pull-request-make."""
+        r = self._run(
+            "add",
+            "Open PR",
+            "--kind",
+            "pull_request",
+            "--branch",
+            "feat-pr",
+            "--skip",
+            "pull-request-review",
+        )
+        self.assertEqual(r.returncode, 0)
+        tid = json.loads(r.stdout)["id"]
+        task = json.loads(self._run("show", str(tid)).stdout)
+        self.assertEqual(task["kind"], "pull_request")
+        self.assertEqual(task["next_step"], "pull-request-make")
+        self.assertEqual(task["skips"], ["pull-request-review"])
+
+    def test_add_pull_request_rejects_commit_review_skip(self):
+        r = self._run(
+            "add",
+            "Open PR",
+            "--kind",
+            "pull_request",
+            "--branch",
+            "feat-pr",
+            "--skip",
+            "commit-review",
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("not allowed for pull request tasks", r.stderr)
 
     def test_show_displays_skips_and_commit_plan(self):
         """task show includes skips and commit_plan fields."""
@@ -4719,15 +4986,13 @@ class TestTaskPlanningCLI(unittest.TestCase):
         """task set --add-skip and --remove-skip update the skips list."""
         r = self._run("add", "Toggle plan")
         tid = json.loads(r.stdout)["id"]
-        # Newly-added task defaults to skipping both planning steps.
+        # Newly-added task defaults to storing only the root planning skip.
         task_before = json.loads(self._run("show", str(tid)).stdout)
-        self.assertEqual(task_before["skips"], ["commit-plan", "commit-plan-review"])
+        self.assertEqual(task_before["skips"], ["commit-plan"])
 
-        # Remove default skips
+        # Remove default skip
         r2 = self._run("set", str(tid), "--remove-skip", "commit-plan")
         self.assertEqual(r2.returncode, 0)
-        r2b = self._run("set", str(tid), "--remove-skip", "commit-plan-review")
-        self.assertEqual(r2b.returncode, 0)
         task_after_remove = json.loads(self._run("show", str(tid)).stdout)
         self.assertEqual(task_after_remove["skips"], [])
 
@@ -4821,6 +5086,53 @@ class TestTaskPlanningOrchestrator(unittest.TestCase):
         self.assertEqual(task["last_review_decision"], "none")
         # review_round must NOT be incremented
         self.assertEqual(task["review_round"], 0)
+
+    def test_commit_plan_review_skipped_when_commit_plan_was_skipped(self):
+        """A skipped commit-plan prevents commit-plan-review from running."""
+        tid = db.add_task(
+            self.conn,
+            "Skipped plan review",
+            coder_agent="claude",
+            skips=["commit-plan"],
+        )
+        db.update_task(
+            self.conn,
+            tid,
+            status="running",
+            branch="b",
+            next_step="commit-plan-review",
+            commit_plan="Plan should not be reviewed",
+        )
+
+        with patch.object(orchestrator, "run_agent") as run_agent:
+            result = orchestrator.advance(db.get_task(self.conn, tid), self.conn)
+
+        self.assertTrue(result)
+        run_agent.assert_not_called()
+        task = db.get_task(self.conn, tid)
+        self.assertEqual(task["status"], "ready")
+        self.assertEqual(task["next_step"], "commit-make")
+
+    def test_commit_plan_review_skipped_when_commit_plan_missing(self):
+        """The orchestrator never runs plan review without a plan."""
+        tid = db.add_task(self.conn, "Missing plan", coder_agent="claude")
+        db.update_task(
+            self.conn,
+            tid,
+            status="running",
+            branch="b",
+            next_step="commit-plan-review",
+            commit_plan=None,
+        )
+
+        with patch.object(orchestrator, "run_agent") as run_agent:
+            result = orchestrator.advance(db.get_task(self.conn, tid), self.conn)
+
+        self.assertTrue(result)
+        run_agent.assert_not_called()
+        task = db.get_task(self.conn, tid)
+        self.assertEqual(task["status"], "ready")
+        self.assertEqual(task["next_step"], "commit-make")
 
     def test_plan_rejection_returns_to_commit_plan_without_incrementing_review_round(self):
         """Rejected plan returns to commit-plan and does NOT increment review_round."""
@@ -5393,15 +5705,15 @@ class TestFollowUpCLI(unittest.TestCase):
         current = json.loads(self._run("show", str(tid)).stdout)
         self.assertEqual(current["follow_up_task_id"], follow_up_id)
 
-    def test_follow_up_skips_plan_phases(self):
-        """Follow-up task skips commit-plan and commit-plan-review, going straight to commit-make."""
+    def test_follow_up_skips_planning(self):
+        """Follow-up task skips commit-plan, which also skips plan review."""
         tid = self._add_task("Base task")
         self._set_running(tid)
         r = self._run("follow-up", str(tid), "--description", "Follow-up")
         self.assertEqual(r.returncode, 0, r.stderr)
         follow_up = json.loads(r.stdout)
         self.assertEqual(follow_up["next_step"], "commit-make")
-        self.assertIn("commit-plan", follow_up["skips"])
+        self.assertEqual(follow_up["skips"], ["commit-plan"])
 
     def test_follow_up_description_stored(self):
         """Follow-up task stores the provided description."""

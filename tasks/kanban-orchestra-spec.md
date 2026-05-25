@@ -427,7 +427,7 @@ task restore
 - Task descriptions are Markdown source. Agents creating or editing tasks should
   use Markdown structure such as headings, bullets, and code spans where useful.
 - Supertasks start with `next_step=commit-make-supertask`.
-- Regular tasks default to skipping planning (`commit-plan`) and start with `next_step=commit-make`. Passing any `--skip` explicitly overrides this default.
+- Regular tasks default to storing a `commit-plan` skip and start with `next_step=commit-make`. `commit-plan-review` is inferred from the `commit-plan` skip, so default task creation does not need to store both skips. Additional `--skip` values are unioned with this default.
 - Parented child tasks inherit the parent branch.
 - `--branch` is not allowed when creating or directly editing a child task.
 - Setting `status=ready` requires a branch.
@@ -551,7 +551,7 @@ changes begin.
 ### Task Planning Fields
 
 - `commit_plan`: text field storing the plan drafted during `commit-plan`.
-- Skips: Step-skipping can be configured to bypass `commit-plan` or `commit-plan-review`.
+- Skips: Step-skipping can be configured to bypass `commit-plan` or `commit-plan-review`. Skipping `commit-plan` also bypasses `commit-plan-review`; the orchestrator also bypasses `commit-plan-review` when no `commit_plan` exists.
 
 ### Task Planning Flow
 
@@ -574,7 +574,8 @@ Task planning is distinct from commit review:
 #### On successful `commit-plan`
 
 - `status -> ready`
-- `next_step -> commit-plan-review`
+- `next_step -> commit-plan-review` when plan review is not skipped
+- `next_step -> commit-make` when plan review is skipped
 
 #### On plan approval
 

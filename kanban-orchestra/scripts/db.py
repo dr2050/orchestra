@@ -11,7 +11,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 LOCK_FILE_NAME = "kanban-orchestra.lock"
 
 SCHEMA_SQL = """\
@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS tasks (
         CHECK(next_step IN ('commit-make', 'commit-review',
                             'commit-make-supertask', 'commit-review-supertask',
                             'commit-plan', 'commit-plan-review',
+                            'pull-request-make', 'pull-request-review',
                             'none')),
     branch                  TEXT,
     commit_hash             TEXT,
@@ -38,7 +39,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     ready_at                DATETIME DEFAULT NULL,
     updated_at              DATETIME DEFAULT CURRENT_TIMESTAMP,
     kind                    TEXT NOT NULL DEFAULT 'task'
-        CHECK(kind IN ('task', 'supertask')),
+        CHECK(kind IN ('task', 'supertask', 'pull_request')),
     parent_task_id          INTEGER REFERENCES tasks(id),
     sequence_index          INTEGER,
     commit_plan             TEXT,
@@ -50,7 +51,8 @@ CREATE TABLE IF NOT EXISTS task_skips (
     task_id  INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     step     TEXT    NOT NULL
                      CHECK(step IN ('commit-plan','commit-plan-review',
-                                    'commit-review','commit-review-supertask')),
+                                    'commit-review','commit-review-supertask',
+                                    'pull-request-review')),
     PRIMARY KEY (task_id, step)
 );
 
@@ -90,6 +92,7 @@ CREATE TABLE IF NOT EXISTS orchestrator_runtime (
             'commit-make', 'commit-review',
             'commit-make-supertask', 'commit-review-supertask',
             'commit-plan', 'commit-plan-review',
+            'pull-request-make', 'pull-request-review',
             'none'
         )),
     current_branch       TEXT,
@@ -315,6 +318,7 @@ def _migrate_orchestrator_runtime(conn: sqlite3.Connection) -> None:
                     'commit-make', 'commit-review',
                     'commit-make-supertask', 'commit-review-supertask',
                     'commit-plan', 'commit-plan-review',
+                    'pull-request-make', 'pull-request-review',
                     'none'
                 )),
             current_branch       TEXT,
@@ -346,6 +350,7 @@ def _migrate_orchestrator_runtime(conn: sqlite3.Connection) -> None:
                     'commit-make', 'commit-review',
                     'commit-make-supertask', 'commit-review-supertask',
                     'commit-plan', 'commit-plan-review',
+                    'pull-request-make', 'pull-request-review',
                     'none'
                 )
                 THEN current_step ELSE 'none'
@@ -405,6 +410,7 @@ def _migrate_skip_commit_plan_tasks(conn: sqlite3.Connection, task_cols: set[str
                     CHECK(next_step IN ('commit-make', 'commit-review',
                                         'commit-make-supertask', 'commit-review-supertask',
                                         'commit-plan', 'commit-plan-review',
+                                        'pull-request-make', 'pull-request-review',
                                         'none')),
                 branch                  TEXT,
                 commit_hash             TEXT,
@@ -418,7 +424,7 @@ def _migrate_skip_commit_plan_tasks(conn: sqlite3.Connection, task_cols: set[str
                 ready_at                DATETIME DEFAULT NULL,
                 updated_at              DATETIME DEFAULT CURRENT_TIMESTAMP,
                 kind                    TEXT NOT NULL DEFAULT 'task'
-                    CHECK(kind IN ('task', 'supertask')),
+                    CHECK(kind IN ('task', 'supertask', 'pull_request')),
                 parent_task_id          INTEGER REFERENCES tasks(id),
                 sequence_index          INTEGER,
                 commit_plan             TEXT,
@@ -434,7 +440,8 @@ def _migrate_skip_commit_plan_tasks(conn: sqlite3.Connection, task_cols: set[str
                 task_id  INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
                 step     TEXT    NOT NULL
                                  CHECK(step IN ('commit-plan','commit-plan-review',
-                                                'commit-review','commit-review-supertask')),
+                                                'commit-review','commit-review-supertask',
+                                                'pull-request-review')),
                 PRIMARY KEY (task_id, step)
             );
             INSERT OR IGNORE INTO task_skips (task_id, step)
@@ -448,6 +455,106 @@ def _migrate_skip_commit_plan_tasks(conn: sqlite3.Connection, task_cols: set[str
     finally:
         conn.execute("PRAGMA foreign_keys=ON")
     conn.commit()
+
+
+def _migrate_task_constraints(conn: sqlite3.Connection, task_cols: set[str]) -> None:
+    """Recreate tasks with current next_step/kind CHECK constraints."""
+    value_expr = {
+        "id": "id",
+        "title": "title",
+        "description": "description" if "description" in task_cols else "NULL",
+        "status": "status" if "status" in task_cols else "'none'",
+        "next_step": "next_step" if "next_step" in task_cols else "'commit-make'",
+        "branch": "branch" if "branch" in task_cols else "NULL",
+        "commit_hash": "commit_hash" if "commit_hash" in task_cols else "NULL",
+        "stash_ref": "stash_ref" if "stash_ref" in task_cols else "NULL",
+        "coder_agent": "coder_agent" if "coder_agent" in task_cols else "NULL",
+        "reviewer_agent": "reviewer_agent" if "reviewer_agent" in task_cols else "NULL",
+        "review_round": "review_round" if "review_round" in task_cols else "0",
+        "last_review_decision": "last_review_decision" if "last_review_decision" in task_cols else "'none'",
+        "created_at": "created_at" if "created_at" in task_cols else "CURRENT_TIMESTAMP",
+        "ready_at": "ready_at" if "ready_at" in task_cols else "NULL",
+        "updated_at": "updated_at" if "updated_at" in task_cols else "CURRENT_TIMESTAMP",
+        "kind": "kind" if "kind" in task_cols else "'task'",
+        "parent_task_id": "parent_task_id" if "parent_task_id" in task_cols else "NULL",
+        "sequence_index": "sequence_index" if "sequence_index" in task_cols else "NULL",
+        "commit_plan": "commit_plan" if "commit_plan" in task_cols else "NULL",
+        "follow_up_task_id": "follow_up_task_id" if "follow_up_task_id" in task_cols else "NULL",
+        "allow_when_blocked": "allow_when_blocked" if "allow_when_blocked" in task_cols else "0",
+    }
+    columns = list(value_expr)
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.executescript(f"""
+            BEGIN;
+            CREATE TABLE tasks_migrated (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                title                   TEXT NOT NULL,
+                description             TEXT,
+                status                  TEXT NOT NULL DEFAULT 'none'
+                    CHECK(status IN ('none', 'ready', 'running', 'done', 'blocked', 'pending_subtasks')),
+                next_step               TEXT NOT NULL DEFAULT 'commit-make'
+                    CHECK(next_step IN ('commit-make', 'commit-review',
+                                        'commit-make-supertask', 'commit-review-supertask',
+                                        'commit-plan', 'commit-plan-review',
+                                        'pull-request-make', 'pull-request-review',
+                                        'none')),
+                branch                  TEXT,
+                commit_hash             TEXT,
+                stash_ref               TEXT,
+                coder_agent             TEXT,
+                reviewer_agent          TEXT,
+                review_round            INTEGER DEFAULT 0,
+                last_review_decision    TEXT DEFAULT 'none'
+                    CHECK(last_review_decision IN ('none', 'approve', 'reject')),
+                created_at              DATETIME DEFAULT CURRENT_TIMESTAMP,
+                ready_at                DATETIME DEFAULT NULL,
+                updated_at              DATETIME DEFAULT CURRENT_TIMESTAMP,
+                kind                    TEXT NOT NULL DEFAULT 'task'
+                    CHECK(kind IN ('task', 'supertask', 'pull_request')),
+                parent_task_id          INTEGER REFERENCES tasks(id),
+                sequence_index          INTEGER,
+                commit_plan             TEXT,
+                follow_up_task_id       INTEGER REFERENCES tasks(id),
+                allow_when_blocked      INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO tasks_migrated ({", ".join(columns)})
+                SELECT {", ".join(value_expr[column] for column in columns)}
+                FROM tasks;
+            DROP TABLE tasks;
+            ALTER TABLE tasks_migrated RENAME TO tasks;
+            COMMIT;
+        """)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+    conn.commit()
+
+
+def _migrate_task_skips_constraints(conn: sqlite3.Connection) -> None:
+    """Recreate task_skips with the current step CHECK constraint."""
+    conn.executescript("""
+        BEGIN;
+        CREATE TABLE task_skips_migrated (
+            task_id  INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            step     TEXT    NOT NULL
+                             CHECK(step IN ('commit-plan','commit-plan-review',
+                                            'commit-review','commit-review-supertask',
+                                            'pull-request-review')),
+            PRIMARY KEY (task_id, step)
+        );
+        INSERT OR IGNORE INTO task_skips_migrated (task_id, step)
+            SELECT task_id, step FROM task_skips
+            WHERE step IN ('commit-plan','commit-plan-review',
+                           'commit-review','commit-review-supertask',
+                           'pull-request-review');
+        DROP TABLE task_skips;
+        ALTER TABLE task_skips_migrated RENAME TO task_skips;
+        COMMIT;
+    """)
 
 
 def restore_dump(
@@ -552,8 +659,7 @@ def _check_schema_compatible(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE tasks ADD COLUMN reviewer_agent TEXT")
         conn.commit()
 
-    # The task_skips table must exist and its step CHECK constraint must be present.
-    # We check for the table name and for the presence of the 4 valid step names in the DDL.
+    # The task_skips table must exist and its step CHECK constraint must be current.
     skips_schema = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='task_skips'"
     ).fetchone()
@@ -563,27 +669,31 @@ def _check_schema_compatible(conn: sqlite3.Connection) -> None:
             "Delete kanban-orchestra.db to recreate it, "
             "or run 'task restore' from a current kanban-orchestra.sql dump."
         )
-    valid_steps = ("'commit-plan'", "'commit-plan-review'", "'commit-review'", "'commit-review-supertask'")
+    valid_steps = (
+        "'commit-plan'",
+        "'commit-plan-review'",
+        "'commit-review'",
+        "'commit-review-supertask'",
+        "'pull-request-review'",
+    )
     missing_steps = [s for s in valid_steps if s not in skips_schema[0]]
     if missing_steps:
-        raise RuntimeError(
-            f"kanban-orchestra.db has an outdated task_skips.step constraint "
-            f"(missing: {', '.join(missing_steps)}). "
-            "Delete kanban-orchestra.db to recreate it, "
-            "or run 'task restore' from a current kanban-orchestra.sql dump."
-        )
+        _migrate_task_skips_constraints(conn)
 
-    # The next_step CHECK constraint must include 'commit-plan'
+    # The tasks CHECK constraints must include current next_step and kind values.
     tasks_schema = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'"
     ).fetchone()
-    if tasks_schema and "'commit-plan'" not in tasks_schema[0]:
-        raise RuntimeError(
-            "kanban-orchestra.db has an outdated tasks.next_step constraint "
-            "(missing 'commit-plan'). "
-            "Delete kanban-orchestra.db to recreate it, "
-            "or run 'task restore' from a current kanban-orchestra.sql dump."
-        )
+    if tasks_schema and (
+        "'commit-plan'" not in tasks_schema[0]
+        or "'pull-request-make'" not in tasks_schema[0]
+        or "'pull_request'" not in tasks_schema[0]
+    ):
+        _migrate_task_constraints(conn, task_cols)
+        task_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+        }
 
     # orchestrator_runtime must accept all current status and step names.
     # This table holds transient state, but preserve the singleton row when
@@ -592,7 +702,13 @@ def _check_schema_compatible(conn: sqlite3.Connection) -> None:
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='orchestrator_runtime'"
     ).fetchone()
     if runtime_schema:
-        required_runtime_tokens = ("'commit-make-supertask'", "'starting'", "'hard-break'")
+        required_runtime_tokens = (
+            "'commit-make-supertask'",
+            "'pull-request-make'",
+            "'pull-request-review'",
+            "'starting'",
+            "'hard-break'",
+        )
         if any(token not in runtime_schema[0] for token in required_runtime_tokens):
             _migrate_orchestrator_runtime(conn)
 
@@ -677,6 +793,8 @@ def add_task(
 ):
     if kind == "supertask":
         next_step = "commit-make-supertask"
+    elif kind == "pull_request":
+        next_step = "pull-request-make"
     elif skips and "commit-plan" in skips:
         next_step = "commit-make"
     else:
@@ -717,10 +835,22 @@ def add_task(
 
 
 def should_skip_step(conn, task_id, step):
-    return conn.execute(
+    if conn.execute(
         "SELECT 1 FROM task_skips WHERE task_id = ? AND step = ?",
         (task_id, step)
-    ).fetchone() is not None
+    ).fetchone() is not None:
+        return True
+
+    if step == "commit-plan-review":
+        task = conn.execute(
+            "SELECT commit_plan FROM tasks WHERE id = ?",
+            (task_id,)
+        ).fetchone()
+        if task is None:
+            return False
+        return should_skip_step(conn, task_id, "commit-plan") or not task["commit_plan"]
+
+    return False
 
 
 def add_task_skip(conn, task_id, step):

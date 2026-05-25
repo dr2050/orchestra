@@ -90,8 +90,10 @@ modify under that root.
 A standard task moves through these steps:
 
 1. `commit-plan` — coder drafts a plan. *Skippable* via `--skip commit-plan`
-   on `task add` (or `task set --add-skip`).
-2. `commit-plan-review` — reviewer assesses the plan. *Skippable.*
+   on `task add` (or `task set --add-skip`); skipping it also bypasses
+   `commit-plan-review`.
+2. `commit-plan-review` — reviewer assesses the plan. *Skippable when a plan
+   exists.*
 3. `commit-make` (Path A) — coder builds and stages the change. Always runs.
 4. `commit-review` — reviewer inspects `git diff --cached`. *Skippable.*
 5. `commit-make` (Path B) — same coder finalizes the commit after approval.
