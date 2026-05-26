@@ -348,7 +348,7 @@ def check_dashboard_process(conn, db_path=None):
 def handle_dashboard_start_request(conn, db_path=None):
     """Consume an explicit dashboard-start request, if one exists."""
     request = _read_dashboard_start_request(db_path)
-    if not request:
+    if request is None or request is False:
         return
 
     _clear_dashboard_start_request(db_path)

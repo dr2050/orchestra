@@ -3921,6 +3921,21 @@ class TestSingletonLock(unittest.TestCase):
 
         start_dashboard.assert_called_once_with("/tmp/kanban.db", preferred_port=8433)
 
+    def test_handle_dashboard_start_request_does_not_drop_port_zero(self):
+        conn = MagicMock()
+        restarted_process = MagicMock()
+        restarted_process.pid = 4321
+        orchestrator._dashboard_process = None
+
+        with patch.object(orchestrator, "_read_dashboard_start_request", return_value=0), \
+             patch.object(orchestrator, "_clear_dashboard_start_request"), \
+             patch.object(orchestrator, "start_dashboard", return_value=restarted_process) as start_dashboard, \
+             patch.object(orchestrator.db, "update_runtime"), \
+             patch.object(orchestrator, "log"):
+            orchestrator.handle_dashboard_start_request(conn, "/tmp/kanban.db")
+
+        start_dashboard.assert_called_once_with("/tmp/kanban.db", preferred_port=0)
+
     def test_handle_dashboard_start_request_noops_when_dashboard_is_running(self):
         conn = MagicMock()
         fake_process = MagicMock()
