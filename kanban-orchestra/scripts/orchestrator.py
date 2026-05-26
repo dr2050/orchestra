@@ -48,6 +48,7 @@ MAX_PRIOR_COMMENTS = config.MAX_PRIOR_COMMENTS
 POLL_INTERVAL = config.POLL_INTERVAL
 HEARTBEAT_INTERVAL = config.HEARTBEAT_INTERVAL
 STOP_AFTER_TASK_FILE = config.STOP_AFTER_TASK_FILE
+DASHBOARD_START_REQUEST_FILE = config.DASHBOARD_START_REQUEST_FILE
 MASTER_BRANCHES = {"master", "main"}
 MASTER_TASKS_DISABLED_MESSAGE = (
     "Tasks on master/main are disabled by default. Use a feature branch, or add "
@@ -210,6 +211,41 @@ def _dashboard_metadata_path(db_path=None):
     return db.get_runtime_root(db_path) / "dashboard.json"
 
 
+def _dashboard_start_request_path(db_path=None):
+    return db.get_runtime_root(db_path) / DASHBOARD_START_REQUEST_FILE
+
+
+def request_dashboard_start(db_path=None):
+    """Ask the running repo orchestrator to start its dashboard."""
+    path = _dashboard_start_request_path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text("start\n", encoding="utf-8")
+    tmp.replace(path)
+    return path
+
+
+def _read_dashboard_start_request(db_path=None):
+    path = _dashboard_start_request_path(db_path)
+    try:
+        path.stat()
+        return True
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        log(f"Could not read dashboard start request: {exc}")
+        return False
+
+
+def _clear_dashboard_start_request(db_path=None):
+    try:
+        _dashboard_start_request_path(db_path).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        log(f"Could not clear dashboard start request: {exc}")
+
+
 def _remove_dashboard_metadata(path=None, db_path=None):
     if path is None:
         path = _dashboard_metadata_path(db_path)
@@ -277,25 +313,47 @@ def stop_dashboard():
         _remove_dashboard_metadata(metadata_path)
 
 
-def check_dashboard_process(conn):
-    """Log dashboard failure without stopping task processing."""
+def check_dashboard_process(conn, db_path=None):
+    """Notice owned dashboard exit without stopping task processing."""
     global _dashboard_metadata_path_for_process, _dashboard_process
     process = _dashboard_process
     metadata_path = _dashboard_metadata_path_for_process
     if process is None:
         return
+
     exit_code = process.poll()
     if exit_code is None:
         return
+
     db.update_runtime(
         conn,
-        status_message=f"Dashboard exited with code {exit_code}; orchestrator still running",
+        status_message=f"Dashboard exited with code {exit_code}; dashboard stopped",
         last_heartbeat_at="CURRENT_TIMESTAMP",
     )
-    log(f"Dashboard exited with code {exit_code}; orchestrator still running")
+    log(f"Dashboard exited with code {exit_code}; dashboard stopped")
     _dashboard_process = None
     _dashboard_metadata_path_for_process = None
     _remove_dashboard_metadata(metadata_path)
+
+
+def handle_dashboard_start_request(conn, db_path=None):
+    """Consume an explicit dashboard-start request, if one exists."""
+    request = _read_dashboard_start_request(db_path)
+    if not request:
+        return
+
+    _clear_dashboard_start_request(db_path)
+    if _dashboard_process is not None and _dashboard_process.poll() is None:
+        log("Dashboard start requested; dashboard is already running")
+        return
+
+    process = start_dashboard(db_path)
+    db.update_runtime(
+        conn,
+        status_message=f"Dashboard started with PID {process.pid} by explicit request",
+        last_heartbeat_at="CURRENT_TIMESTAMP",
+    )
+    log(f"Dashboard started with PID {process.pid} by explicit request")
 
 
 # ── Prompt assembly ────────────────────────────────────────────────────
@@ -2340,7 +2398,7 @@ def process_pinned_task(task, conn):
         return succeeded
 
 
-def main_loop(conn):
+def main_loop(conn, *, db_path=None):
     """Poll for ready tasks and process them one at a time."""
     log("Kanban Orchestra started. Polling for ready tasks...")
 
@@ -2354,7 +2412,8 @@ def main_loop(conn):
     blocked_gate_logged_task_ids = set()
 
     while True:
-        check_dashboard_process(conn)
+        check_dashboard_process(conn, db_path)
+        handle_dashboard_start_request(conn, db_path)
         if stop_file.exists():
             log(f"Found {STOP_AFTER_TASK_FILE} — stopping cleanly. Deleting file.")
             stop_file.unlink()
@@ -2434,20 +2493,24 @@ def main(argv=None):
     conn = None
     try:
         log(f"Logging to {log_path}")
+        lock_path = acquire_singleton_lock(db_path=db_path)
+        log(f"Acquired singleton lock: {lock_path}")
         if is_worktree_dirty():
             log("Refusing to start: git worktree is dirty. Commit, stash, or clean it before starting the orchestrator.")
             return 2
-        lock_path = acquire_singleton_lock(db_path=db_path)
-        log(f"Acquired singleton lock: {lock_path}")
         if not args.no_dashboard:
             start_dashboard(db_path, preferred_port=args.dashboard_port)
 
         conn = db.connect(db_path)
         global _log_conn
         _log_conn = conn
-        main_loop(conn)
+        main_loop(conn, db_path=db_path)
     except SingletonLockError as e:
         log(str(e))
+        if not args.no_dashboard:
+            request_path = request_dashboard_start(db_path)
+            log(f"Requested dashboard start via {request_path}")
+            return 0
         return 1
     except KeyboardInterrupt:
         log("Shutting down gracefully.")
@@ -2471,6 +2534,7 @@ def main(argv=None):
     finally:
         stop_dashboard()
         stop_heartbeat()
+        release_singleton_lock()
         if conn is not None:
             conn.close()
         if _log_fh is not None:

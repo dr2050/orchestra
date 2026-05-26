@@ -15,6 +15,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import config
+
 
 ORCHESTRA_ROOT = Path(os.environ.get("ORCHESTRA_DIR", Path(__file__).resolve().parents[2])).resolve()
 DEFAULT_CONFIG_PATH = Path("~/.config/orchestra/fleet.repos").expanduser()
@@ -106,6 +108,21 @@ def parse_config_lines(text: str) -> list[str]:
 
 def expand_repo_path(raw_path: str) -> Path:
     return Path(os.path.expandvars(raw_path)).expanduser()
+
+
+def display_path(path: Path | str | None) -> str:
+    """Return a display-only path, abbreviating paths under HOME with ~."""
+    if path is None:
+        return "-"
+    resolved = Path(path).expanduser().resolve()
+    home = Path.home().resolve()
+    try:
+        relative = resolved.relative_to(home)
+    except ValueError:
+        return str(resolved)
+    if str(relative) == ".":
+        return "~"
+    return f"~/{relative}"
 
 
 def discover_repo(raw_path: str) -> FleetRepo:
@@ -214,6 +231,17 @@ def metadata_pid(path: Path | None, role: str, repo: FleetRepo | None = None) ->
         return None
 
 
+def request_dashboard_start(repo: FleetRepo) -> Path:
+    if repo.runtime_root is None:
+        die(f"{repo.label}: invalid config ({repo.error or 'missing runtime root'})")
+    path = repo.runtime_root / config.DASHBOARD_START_REQUEST_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text("start\n", encoding="utf-8")
+    tmp.replace(path)
+    return path
+
+
 def dashboard_endpoint_ready(payload: dict, *, timeout: float = 0.25) -> bool:
     host = payload.get("host")
     port = payload.get("port")
@@ -259,10 +287,10 @@ def repo_process_state(repo: FleetRepo) -> tuple[str, str, str, str]:
     orch_alive = pid_alive(orch_pid)
     dashboard_alive = pid_alive(dashboard_pid)
 
-    if session_alive and orch_alive and dashboard_alive:
-        status = "running"
-    elif session_alive and orch_alive:
+    if orch_alive and not dashboard_alive:
         status = "no-dashboard"
+    elif session_alive and orch_alive and dashboard_alive:
+        status = "running"
     elif session_alive:
         status = "session-only"
     elif orch_alive:
@@ -305,10 +333,10 @@ def require_startable(repos: list[FleetRepo]) -> None:
 
     print("Fleet precheck failed; not starting anything.", file=sys.stderr)
     for repo in invalid:
-        print(f"\n{repo.label}: {repo.path}", file=sys.stderr)
+        print(f"\n{repo.label}: {display_path(repo.path)}", file=sys.stderr)
         print(f"  {repo.error}", file=sys.stderr)
     for repo, lines in dirty:
-        print(f"\n{repo.label}: {repo.root}", file=sys.stderr)
+        print(f"\n{repo.label}: {display_path(repo.root)}", file=sys.stderr)
         for line in lines[:12]:
             print(f"  {line}", file=sys.stderr)
         if len(lines) > 12:
@@ -321,7 +349,7 @@ def print_status(repos: list[FleetRepo]) -> None:
     for repo in repos:
         status, orch_pid, dashboard_pid, session = repo_process_state(repo)
         dashboard_url = dashboard_status_url(repo)
-        rows.append((repo.label, status, orch_pid, dashboard_pid, session, dashboard_url, str(repo.root or repo.path)))
+        rows.append((repo.label, status, orch_pid, dashboard_pid, session, dashboard_url, display_path(repo.root or repo.path)))
 
     widths = [
         max(len("repo"), *(len(row[0]) for row in rows)),
@@ -360,11 +388,11 @@ def precheck(repos: list[FleetRepo]) -> int:
             continue
         lines = dirty_lines(repo)
         if lines:
-            rows.append((repo.label, "dirty", str(len(lines)), str(repo.root)))
+            rows.append((repo.label, "dirty", str(len(lines)), display_path(repo.root)))
             dirty.append((repo, lines))
             exit_code = 1
         else:
-            rows.append((repo.label, "clean", "0", str(repo.root)))
+            rows.append((repo.label, "clean", "0", display_path(repo.root)))
 
     widths = [
         max(len("repo"), *(len(row[0]) for row in rows)),
@@ -379,7 +407,7 @@ def precheck(repos: list[FleetRepo]) -> int:
     if dirty:
         print("\nDirty details:")
         for repo, lines in dirty:
-            print(f"\n{repo.label}: {repo.root}")
+            print(f"\n{repo.label}: {display_path(repo.root)}")
             for line in lines[:12]:
                 print(f"  {line}")
             if len(lines) > 12:
@@ -396,7 +424,11 @@ def start(repos: list[FleetRepo], *, precheck: bool = True) -> None:
         if repo.root is None:
             die(f"{repo.label}: invalid config ({repo.error or 'missing git root'})")
         status, orch_pid, _, session = repo_process_state(repo)
-        if status in {"running", "no-dashboard", "running-external"}:
+        if status == "no-dashboard":
+            request_dashboard_start(repo)
+            print(f"{repo.label}: dashboard start requested (orchestrator {orch_pid})")
+            continue
+        if status in {"running", "running-external"}:
             print(f"{repo.label}: already running (orchestrator {orch_pid})")
             continue
         if status == "session-only":
@@ -430,7 +462,7 @@ def stop(repos: list[FleetRepo]) -> None:
             print(f"{repo.label}: stopped tmux session")
         else:
             status, orch_pid, _, _ = repo_process_state(repo)
-            if status == "running-external":
+            if orch_pid != "-":
                 print(f"{repo.label}: running outside fleet tmux session (orchestrator {orch_pid}); left alone")
             else:
                 print(f"{repo.label}: not running")

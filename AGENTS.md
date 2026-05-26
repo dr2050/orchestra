@@ -10,7 +10,8 @@
 
 There is no build step for this repo.
 
-ALLOW_TASKS_ON_MASTER
+Do not queue or run Kanban Orchestra tasks on `master` or `main` in this repo.
+Use a feature branch for orchestrated work.
 
 Before staging changes that could affect executable behavior, run the unit tests
 from this checkout:
