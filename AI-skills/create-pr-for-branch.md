@@ -33,9 +33,9 @@ PR descriptions are Markdown — use standard Markdown formatting (headings, bul
 
 Sections, in order:
 
-- **What** — The main story: what changes for humans using or reviewing this branch. Start with one short sentence, then use bullets for the concrete changes reviewers should understand. Avoid long paragraphs.
+- **What** — The main story only: what changes for humans using or reviewing this branch. Start with one short sentence, then add at most one or two bullets for the core behavior. If a bullet is not part of that main story, move it to **Other**.
 - **Why** — The motivation and impact of the main change.
-- **Other** (optional) — Related or bundled changes that are not the main story. Put process/docs/tooling cleanup here when it supports the branch but is not part of the primary user-facing change.
+- **Other** (optional) — Related or bundled changes that are not the main story. Put process/docs/tooling cleanup, supporting display changes, branch policy updates, tests, and implementation notes here when they support the branch but are not part of the primary user-facing change.
 - **Review Notes** (optional) — Scan the commit log for follow-up/fix commits (subjects starting with `fix`, `address`, `review`, `cr`, or commits that revise earlier work in the same branch). Synthesize one bullet per distinct issue category that was identified and resolved during the branch's life. Omit entirely if no such commits exist.
 - **Test Plan** — GitHub task-list checkboxes for verifying the PR.
 
@@ -43,7 +43,7 @@ Sections, in order:
 
 - Prefer direct statements of what changed and why. Avoid contrastive filler like "instead of", "rather than", or "no longer" unless the comparison is the point.
 - Only mention file paths if it adds value. The file changes are part of the PR.
-- Keep sections short. If there is a single main story plus minor related changes, put the main story sentence and bullets under **What**, then put minor changes under **Other**.
+- Keep sections short. If there is a single main story plus minor related changes, put only the main story sentence and its one or two core bullets under **What**, then put every secondary change under **Other**.
 
 ### Example
 
