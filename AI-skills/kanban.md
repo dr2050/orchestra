@@ -110,6 +110,34 @@ prompt so the coder restores that work first.
 Valid skip values: `commit-plan`, `commit-plan-review`, `commit-review`,
 `commit-review-supertask`.
 
+## Queueing semantics
+
+`ready` is the runnable backlog, not a concurrency request. Multiple tasks in
+`ready` are normal and expected. The orchestrator selects eligible `ready`
+tasks one at a time, applies branch, blocked-state, worktree, and lifecycle
+checks, and serializes execution through the configured `next_step`.
+
+Operationally:
+- `none` means the task exists but is not queued yet.
+- `ready` means the task is queued and eligible for pickup.
+- Setting many tasks to `ready` does not bypass sequencing or validation, and
+  it does not make them run concurrently.
+- Do not hold later tasks at `none` merely because earlier tasks should run
+  first. Use ordering fields, explicit dependencies, blocked states, stop
+  markers, or separate validation tasks when the workflow requires a gate.
+
+Operator guidance:
+- If the user asks to queue or cue a batch of tasks, create or update them in
+  numeric or planned order, set each task's branch and meaningful `next_step`,
+  then set each task to `ready` unless the user explicitly asks to pause
+  between tasks.
+- Do not invent validation gates from plan prose. If gates are required, model
+  them explicitly as tasks, blocked states, stop markers, or leave specific
+  tasks at `none` only when the user requested that.
+- If the user says to set tasks ready one by one in order, perform the updates
+  sequentially in that order; do not wait for each task to complete before
+  readying the next one unless the user says to.
+
 ## Task management
 
 All commands assume the `task` alias above.
@@ -221,6 +249,26 @@ Notes:
   another task is blocked.
 - `task comment` for durable notes and review outcomes; `task log` for
   ephemeral progress notes.
+
+Batch queueing example:
+
+```bash
+task add "1/3 Add parser fixture" --branch feature/parser-cleanup
+task add "2/3 Update parser behavior" --branch feature/parser-cleanup
+task add "3/3 Document parser behavior" --branch feature/parser-cleanup
+
+task set 101 --next-step commit-make
+task set 102 --next-step commit-make
+task set 103 --next-step commit-make
+
+task set 101 --status ready
+task set 102 --status ready
+task set 103 --status ready
+```
+
+This queues all three tasks for serialized pickup. Do not use `master` or
+`main` for `--branch` unless the work repo has opted in with the standalone
+`ALLOW_TASKS_ON_MASTER` marker in `AGENTS.md`.
 
 ## Important notes
 
