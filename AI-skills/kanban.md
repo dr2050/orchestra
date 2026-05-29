@@ -46,28 +46,28 @@ All commands below use that shorthand. If you don't set the function, use
 
 ## Workspace rule
 
-Keep the Orchestra installation path distinct from the work repo path:
-`$ORCHESTRA_DIR` is where the tooling lives, while the shell's current working
-directory is the repository whose Kanban database, tasks, git diff, and runtime
-state the wrappers operate on unless a command explicitly documents another
-target.
+`$ORCHESTRA_DIR` points at the Orchestra checkout that provides the tooling.
+The shell's current git repo is the launched work repo whose Kanban database,
+tasks, git diff, and runtime state the wrappers operate on unless a command
+explicitly documents another target. These may be the same checkout when
+working on Orchestra itself.
 
-Edit only files inside the current checkout root (paths like
-`kanban-orchestra/...` and `AI-skills/...`). Treat files under
-`$ORCHESTRA_DIR` as reference paths unless the user explicitly asks you to
-edit there. Before your first edit, state the repo root
-(`git rev-parse --show-toplevel`) and at least one target path you plan to
-modify under that root.
+Edit only files inside the current checkout root. If `$ORCHESTRA_DIR` resolves
+to that same root, files such as `kanban-orchestra/...` and `AI-skills/...` are
+normal task targets. If `$ORCHESTRA_DIR` is a different checkout, treat it as
+tooling/reference unless the user explicitly asks you to edit there. Before
+your first edit, state the repo root (`git rev-parse --show-toplevel`) and at
+least one target path you plan to modify under that root.
 
 ## Bootstrap
 
 1. Treat the current working repo as the work repo.
 2. Resolve the repo root with `git rev-parse --show-toplevel`.
 3. Require `$ORCHESTRA_DIR`.
-4. Remember the path split:
+4. Remember the path relationship:
    - Current checkout / repo root: the work repo the wrappers operate on.
-   - `$ORCHESTRA_DIR`: the Orchestra install that provides wrappers and
-     reference implementation files.
+   - `$ORCHESTRA_DIR`: the Orchestra checkout that provides wrappers and
+     implementation files; it may be the same path as the current repo root.
 5. Canonical paths:
    - DB: `<repo-root>/kanban-orchestra.db`
    - SQL dump: `<repo-root>/kanban-orchestra.sql`
@@ -291,6 +291,18 @@ This queues all three tasks for serialized pickup. Do not use `master` or
   both `--author` and `--review-round`.
 - Plan-review decisions (`--plan-approval`, `--plan-rejection`) require
   `--author` only.
+
+## Self-hosting Orchestra
+
+When the current repo root is the same path as `$ORCHESTRA_DIR`, Kanban state
+still belongs to the launched repo root. The database, SQL dump, runtime files,
+locks, logs, and dashboard metadata live beside the Orchestra source and are
+gitignored.
+
+After pulling or editing Orchestra code in a self-hosted checkout, restart any
+running orchestrator or fleet-owned instances. Long-lived Python processes may
+continue using the code they started with, while new wrapper commands use the
+current checkout.
 
 ## Stuck/not-stuck checks
 

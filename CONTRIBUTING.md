@@ -19,8 +19,7 @@ commands you choose to configure.
 - Keep changes small and scoped.
 - Do not commit local task databases, runtime logs, credentials, API keys, or
   provider tokens.
-- Keep personal paths such as `/Users/Shared/orchestra` as optional examples,
-  not assumptions.
+- Keep personal install paths as examples, not assumptions.
 - Run the test suite from this checkout:
 
 ```bash

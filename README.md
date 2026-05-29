@@ -82,6 +82,10 @@ accounts, or billing — install and authenticate each CLI yourself.
    export ORCHESTRA_DIR="/path/to/orchestra"
    ```
 
+   `ORCHESTRA_DIR` may point at the same checkout you are currently operating
+   on. When you use Orchestra to work on Orchestra itself, that single checkout
+   is both the tooling checkout and the launched work repo.
+
    zsh users can also load the optional command helpers:
 
    ```zsh
@@ -164,9 +168,10 @@ land on the branch — all while you're away from your desk.
 The orchestrator is the durable worker. Start it from the root of each work
 repo where you want tasks processed, and keep it alive in whatever way you
 normally keep local development processes alive. It starts the matching
-dashboard for that same repo instance. The work repo owns the state
-(`kanban-orchestra.db`, runtime files, dashboard metadata, and logs); the
-Orchestra checkout only provides the tools.
+dashboard for that same repo instance. The launched repo root owns the state
+(`kanban-orchestra.db`, runtime files, dashboard metadata, and logs).
+`ORCHESTRA_DIR` provides the tools and may be the same path when Orchestra is
+working on its own checkout.
 
 For first use, run it directly in a dedicated terminal:
 
@@ -246,11 +251,14 @@ export ORCHESTRA_DEFAULT_SUPER_REVIEWER=codex
 
 ## Operating Model
 
-Kanban state lives in the **work repo**, not in the Orchestra checkout:
+Kanban state lives in the **launched repo root**:
 
 - `kanban-orchestra.db` — task state (SQLite)
 - `.kanban-orchestra/` — runtime files and logs
 - Tasks target the work repo's current branch unless overridden
+
+If `ORCHESTRA_DIR` points at that same checkout, these state files live beside
+the Orchestra source and remain ignored by git.
 
 The orchestrator expects a clean worktree. It refuses to launch when dirty and
 blocks rather than continuing through unexpected uncommitted changes.
@@ -279,6 +287,10 @@ export ORCHESTRA_DIR="/path/to/orchestra"
 "$ORCHESTRA_DIR/shared_scripts/bootstrap-python-env.sh"
 "$ORCHESTRA_DIR/bin/ko-test"
 ```
+
+If you do use Orchestra to work on this repo, restart running orchestrator or
+fleet instances after pulling or changing Orchestra code. Existing long-lived
+Python processes may keep running the code they started with.
 
 ## License
 

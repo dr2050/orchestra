@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Create or update an Orchestra checkout-local Python environment.
 #
-# Run this in any Orchestra checkout. A shared path such as
-# /Users/Shared/orchestra is optional.
+# Run this in any Orchestra checkout.
 
 set -euo pipefail
 

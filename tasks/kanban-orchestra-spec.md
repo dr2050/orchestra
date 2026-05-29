@@ -12,10 +12,12 @@ This document is the canonical behavior spec for Kanban Orchestra.
 
 ## Repo Model
 
-Two repositories participate:
+Two roles participate:
 
 - Work Repo: the repo where code changes happen
 - Orchestra Repo: the repo that contains shared orchestration scripts and prompts
+
+The two roles may be the same checkout when Orchestra is working on itself.
 
 The work repo contains the live database:
 
@@ -36,9 +38,10 @@ $ORCHESTRA_DIR/
 
 Rules:
 
-- All file edits, builds, git operations, and task execution happen in the work repo.
+- All file edits, builds, git operations, and task execution happen in the launched work repo.
 - `ORCHESTRA_DIR` must point to an Orchestra checkout root.
-- Use work-repo paths as the write location.
+- Use launched-repo paths as the write location. When the launched repo is also
+  `$ORCHESTRA_DIR`, Orchestra source files are valid task targets.
 - The orchestrator assumes exclusive repo access in the current worktree.
 
 ## Core Concepts
@@ -694,6 +697,10 @@ dashboard process for the same git repo root. Start it from the work repo root:
 ```bash
 "$ORCHESTRA_DIR/bin/ko-orchestrator"
 ```
+
+When the work repo root is the same path as `$ORCHESTRA_DIR`, restart the
+repo instance after pulling or changing Orchestra code so long-lived processes
+do not keep using older in-memory code.
 
 For multiple repos, `ko-fleet` reads a private flat path list from
 `~/.config/orchestra/fleet.repos` by default. Each non-empty non-comment line
