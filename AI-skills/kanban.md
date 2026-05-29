@@ -96,7 +96,7 @@ A standard task moves through these steps:
    exists.*
 3. `commit-make` (Path A) — coder builds and stages the change. Always runs.
 4. `commit-review` — reviewer inspects `git diff --cached`. *Skippable.*
-5. `commit-make` (Path B) — same coder finalizes the commit after approval.
+5. `commit-make` (Path B) — same coder considers approval notes and finalizes the commit after approval.
    Always runs.
 
 Supertasks substitute `commit-make-supertask` and `commit-review-supertask`

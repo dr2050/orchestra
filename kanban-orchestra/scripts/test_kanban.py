@@ -1050,6 +1050,28 @@ class TestPromptAssembly(unittest.TestCase):
         self.assertIn("Always write a fresh `--commit-message` comment during the current run", prompt)
         self.assertIn("valid on Path B only", prompt)
 
+    def test_build_prompt_path_b_requires_reading_approval_notes(self):
+        task = {
+            "id": 1, "title": "T", "description": None,
+            "branch": "b", "status": "running", "next_step": "commit-make",
+            "review_round": 2, "last_review_decision": "approve",
+            "commit_hash": None, "stash_ref": None, "coder_agent": "claude",
+        }
+        comments = [
+            {"kind": "approval", "review_round": 2, "author": "codex",
+             "message": "Approved; please fix the typo before landing."},
+            {"kind": "comment", "review_round": 2, "author": "codex",
+             "message": "Same-round note: no broader refactor needed."},
+        ]
+        prompt = orchestrator.build_prompt(task, "commit-make", "claude", comments)
+        self.assertIn("Read same-round review guidance before committing", prompt)
+        self.assertIn("Approval means the task may land", prompt)
+        self.assertIn("small, directly reviewer-requested edits", prompt)
+        self.assertIn("Do not make broader improvements", prompt)
+        self.assertIn("durable `task comment ... --comment`", prompt)
+        self.assertIn("Approved; please fix the typo before landing.", prompt)
+        self.assertIn("Same-round note: no broader refactor needed.", prompt)
+
     def test_build_prompt_reviewer_includes_handoff_section(self):
         """commit-review prompt includes repo root, task CLI path, and 'do not rerun' guidance."""
         task = {

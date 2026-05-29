@@ -25,7 +25,7 @@ A standard task moves through these steps:
 2. `commit-plan-review` — reviewer approves or rejects the plan. *Skippable when a plan exists.*
 3. `commit-make` (Path A) — sticky coder builds (or reworks) the commit and stages everything.
 4. `commit-review` — reviewer inspects `git diff --cached`. *Skippable.*
-5. `commit-make` (Path B) — same coder finalizes the commit after approval.
+5. `commit-make` (Path B) — same coder considers approval notes and finalizes the commit after approval.
 
 A supertask substitutes `commit-make-supertask` and `commit-review-supertask`
 for steps 3–4: the coder decomposes the supertask into ordered child tasks

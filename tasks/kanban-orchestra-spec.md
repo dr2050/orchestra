@@ -489,7 +489,15 @@ This is the finalization path.
 
 Required behavior:
 
-- Do not make new code changes.
+- Read the current-round approval comment and any same-round review notes before
+  committing.
+- Treat approval as permission to land, not as a reason to ignore reviewer
+  guidance. The coder may make small, directly reviewer-requested final edits
+  that are clearly within the approved scope, then stage them before committing.
+- Do not make broader improvements, refactors, or opportunistic fixes on Path B.
+  If a requested edit is non-trivial, a new issue appears, or scope is unclear,
+  the coder must avoid committing and leave a durable comment so the task can
+  return to review or human triage.
 - Read the latest `commit-message` comment.
 - Ensure the canonical footer `Task <id> (<attribution>)` is present. Run `task get-commit-footer <id>` to produce it.
 - If the repo has `SKIP_BUILD_UNTIL_APPROVED`, run the full build now. If the

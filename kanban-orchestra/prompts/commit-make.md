@@ -78,17 +78,30 @@ You are building (or reworking) the commit.
 
 Reviewers have approved. You are finalizing the commit.
 
-1. **Keep the approved diff as-is.** The staged diff is what reviewers signed
-   off on.
-2. **Reuse the approved commit message.** Find the most recent
+1. **Read same-round review guidance before committing.** Run
+   `task show-comments <id>` and read the approval comment plus any other
+   same-round review notes. Approval means the task may land, but the
+   committer still owns catching direct reviewer requests before the commit.
+2. **Keep the approved diff stable unless the reviewer requested a final
+   touch-up.** You may make small, directly reviewer-requested edits that are
+   clearly within the approved change. Stage them with `git add .` before
+   committing. Do not make broader improvements, refactors, or opportunistic
+   fixes on Path B.
+3. **Stop instead of landing unreviewed work when scope changes.** If a
+   requested edit is non-trivial, if you discover a new issue, or if you are
+   unsure whether a change is within the approved scope, do not commit. Leave
+   a durable `task comment ... --comment` explaining what needs another look
+   and exit without creating a commit so the task can be routed back for
+   review or human triage.
+4. **Reuse the approved commit message.** Find the most recent
    `commit-message` entry in `task show-comments <id>`. Reusing the existing
    comment is valid on Path B only, after review approval.
-3. **Confirm the canonical footer.** Run `task get-commit-footer <id>` and
+5. **Confirm the canonical footer.** Run `task get-commit-footer <id>` and
    ensure the message ends with that exact `Task <id> (<attribution>)` line.
    Replace any bare `Task <id>` trailer that is missing the attribution.
-4. **Run the deferred build (only if `skip_build_until_approved: yes`).**
+6. **Run the deferred build (only if `skip_build_until_approved: yes`).**
    This is the deferred validation step.
-   - If the build passes without modifying staged files: continue to step 5.
+   - If the build passes without modifying staged files: continue to step 7.
    - If the build modifies files (artifacts, formatters, fixes), stage them
      with `git add .`, then signal another review round:
      ```
@@ -97,7 +110,7 @@ Reviewers have approved. You are finalizing the commit.
      EOF
      ```
      Exit without committing. The orchestrator re-enters review.
-5. **Finalize — pick exactly one path:**
+7. **Finalize — pick exactly one path:**
 
    **Normal: create the commit.**
    ```
